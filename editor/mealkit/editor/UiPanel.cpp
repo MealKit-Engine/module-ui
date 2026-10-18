@@ -1,0 +1,178 @@
+#include "mealkit/editor/UiPanel.h"
+
+#include "mealkit/editor/FieldEditor.h"
+#include "mealkit/editor/Strings.h"
+#include "mealkit/platform/Paths.h"
+#include "mealkit/ui/Document.h"
+
+#include <algorithm>
+#include <cstring>
+#include <imgui.h>
+
+namespace mealkit::editor {
+namespace {
+
+struct Resolution {
+    const char* label;
+    f32 w, h;
+};
+constexpr Resolution kResolutions[] = {
+    {"1920x1080 (16:9)", 1920, 1080}, {"1280x720 (16:9)", 1280, 720}, {"2560x1080 (21:9)", 2560, 1080},
+    {"1024x768 (4:3)", 1024, 768},    {"1080x1920 (9:16)", 1080, 1920},
+};
+constexpr u32 kNodeBudget = 500;
+
+} // namespace
+
+void UiPanel::setProject(const std::string& defaultLanguage) {
+    m_defaultLanguage = defaultLanguage.empty() ? "ko" : defaultLanguage;
+    m_language.clear();
+    m_strings.load(m_defaultLanguage, m_defaultLanguage);
+    m_ui.closeAll();
+    m_screen = ui::kNoScreen;
+    m_selected = -1;
+    m_ready = false;
+    refresh();
+}
+
+void UiPanel::setViewModels(const std::vector<const reflect::TypeInfo*>* types) {
+    m_viewModels = types;
+    if (!types || std::find(types->begin(), types->end(), m_vmType) == types->end()) { // DLL이 바뀌면 타입이 무효
+        if (m_screen) m_ui.bind(m_screen, reflect::View{});
+        m_vm = {};
+        m_vmType = nullptr;
+    }
+}
+
+void UiPanel::refresh() {
+    m_files.clear();
+    const std::string dir = findAsset("assets/ui");
+    if (dir.empty()) return;
+    for (const std::string& f : listFiles(dir, ".ui"))
+        if (std::string("ui/") + f != ui::kThemeFile) m_files.push_back(f);
+}
+
+void UiPanel::select(const std::string& uiFile) {
+    refresh();
+    for (size_t i = 0; i < m_files.size(); ++i)
+        if (m_files[i] == uiFile) m_selected = static_cast<int>(i);
+    openSelected();
+}
+
+void UiPanel::openSelected() {
+    if (m_screen) m_ui.close(m_screen);
+    m_screen = ui::kNoScreen;
+    if (m_selected < 0 || m_selected >= static_cast<int>(m_files.size())) return;
+    m_screen = m_ui.open("ui/" + m_files[static_cast<size_t>(m_selected)]);
+    bindViewModel();
+}
+
+void UiPanel::bindViewModel() {
+    if (m_screen) m_ui.bind(m_screen, m_vmType ? reflect::View{m_vmType, m_vm.data()} : reflect::View{});
+}
+
+void UiPanel::draw(bool* open) {
+    if (!ImGui::Begin(trl("UI"), open)) {
+        ImGui::End();
+        return;
+    }
+    if (m_files.empty()) refresh();
+    if (m_files.empty()) ImGui::TextDisabled("%s", tr("No .ui files in assets/ui."));
+    if (ImGui::BeginListBox("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(6.0f, static_cast<f32>(m_files.size()) + 0.5f)))) {
+        for (size_t i = 0; i < m_files.size(); ++i)
+            if (ImGui::Selectable(m_files[i].c_str(), m_selected == static_cast<int>(i))) {
+                m_selected = static_cast<int>(i);
+                openSelected();
+            }
+        ImGui::EndListBox();
+    }
+    if (ImGui::SmallButton(tr("Refresh"))) refresh();
+
+    ImGui::SeparatorText(tr("Screen preview"));
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##resolution", kResolutions[m_resolution].label)) {
+        for (int i = 0; i < static_cast<int>(std::size(kResolutions)); ++i)
+            if (ImGui::Selectable(kResolutions[i].label, m_resolution == i)) m_resolution = i;
+        ImGui::EndCombo();
+    }
+    if (ImGui::SliderFloat(tr("UI scale"), &m_scale, 0.5f, 2.0f, "%.2f")) m_ui.setScale(m_scale);
+    const std::vector<std::string> languages = m_strings.languages();
+    if (!languages.empty() && ImGui::BeginCombo(tr("Language"), m_strings.language().c_str())) {
+        for (const std::string& lang : languages)
+            if (ImGui::Selectable(lang.c_str(), lang == m_strings.language())) {
+                m_language = lang;
+                m_strings.load(lang, m_defaultLanguage);
+            }
+        ImGui::EndCombo();
+    }
+    if (ImGui::Checkbox(tr("Show focus"), &m_showFocus)) m_ui.setFocusVisible(m_showFocus);
+
+    ImGui::SeparatorText(tr("Preview values"));
+    const char* vmName = m_vmType ? m_vmType->name : tr("(none)");
+    if (ImGui::BeginCombo(tr("View model"), vmName)) {
+        if (ImGui::Selectable(tr("(none)"), !m_vmType)) {
+            m_vmType = nullptr;
+            m_vm = {};
+            bindViewModel();
+        }
+        if (m_viewModels)
+            for (const reflect::TypeInfo* t : *m_viewModels)
+                if (ImGui::Selectable(t->name, t == m_vmType)) {
+                    m_vmType = t;
+                    m_vm = reflect::Instance(*t);
+                    bindViewModel();
+                }
+        ImGui::EndCombo();
+    }
+    if (!m_viewModels) ImGui::TextDisabled("%s", tr("View models appear when the game code is loaded."));
+    if (m_vmType) drawFields(*m_vmType, m_vm.data());
+
+    if (m_screen) {
+        const ui::ScreenInfo info = m_ui.info(m_screen);
+        ImGui::SeparatorText(tr("Problems"));
+        ImGui::TextDisabled("%s", info.exported ? tr("Exported from Penpot (do not edit by hand)") : tr("Hand-written"));
+        ImGui::Text("%s", trf("Nodes: %u (budget %u)", info.nodes, kNodeBudget).c_str());
+        if (info.nodes > kNodeBudget) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("Over the node budget"));
+        if (info.errors.empty()) ImGui::TextDisabled("%s", tr("No problems"));
+        for (const std::string& e : info.errors) ImGui::TextWrapped("%s", e.c_str());
+    }
+    ImGui::End();
+}
+
+void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneView, f64 dt) {
+    if (!m_ready) {
+        m_ui.init(&renderer, &m_strings);
+        m_ready = true;
+    }
+    if (m_strings.language().empty()) m_strings.load(m_defaultLanguage, m_defaultLanguage);
+    m_strings.update(dt);
+    m_refreshTimer += dt;
+    if (m_refreshTimer > 1.0) {
+        m_refreshTimer = 0.0;
+        refresh();
+    }
+    if (!m_screen) return;
+    // 고른 해상도의 비율로 씬 뷰 안에 맞춘다 (그 크기가 들어가면 그 픽셀 크기 그대로)
+    const Resolution& r = kResolutions[m_resolution];
+    const f32 vw = std::max(1.0f, sceneView.width), vh = std::max(1.0f, sceneView.height);
+    f32 w = r.w, h = r.h;
+    if (w > vw || h > vh) {
+        const f32 k = std::min(vw / w, vh / h);
+        w *= k;
+        h *= k;
+    }
+    const render::Viewport view{sceneView.x + (vw - w) * 0.5f, sceneView.y + (vh - h) * 0.5f, w, h};
+    render::UiQuad frame; // 미리보기 영역 표시
+    frame.rect[0] = view.x;
+    frame.rect[1] = view.y;
+    frame.rect[2] = view.width;
+    frame.rect[3] = view.height;
+    frame.color0 = render::rgba(0, 0, 0, 70);
+    frame.strokeWidth = 1.0f;
+    frame.strokeColor = render::rgba(255, 210, 80, 160);
+    renderer.drawUi(&frame, 1);
+    m_ui.update({}, view, dt);
+    m_ui.render(renderer);
+}
+
+} // namespace mealkit::editor
