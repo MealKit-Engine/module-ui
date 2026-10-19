@@ -288,6 +288,7 @@ struct RNode {
     bool disabled = false, checked = false;
     f32 mix[static_cast<int>(State::Count)] = {};
     std::string text; // 바인딩을 푼 글자
+    bool placeholder = false; // 글자 입력이 비어 자리 표시 글자를 보인다
     Shaped shaped;
     f32 shapedWidth = -2.0f; // 이 너비로 줄을 나눴다
     std::string shapedText;
@@ -309,6 +310,7 @@ struct Screen {
     bool rebuild = true;
     std::vector<std::string> bindingErrors;
     i32 focus = -1, hover = -1, pressed = -1;
+    i32 editing = -1; // 글자를 치고 있는 글자 입력 노드
     f32 rootW = 1920, rootH = 1080, scale = 1, originX = 0, originY = 0;
 };
 
@@ -578,6 +580,19 @@ struct System::Impl {
     std::string resolveText(Screen& s, i32 index) {
         RNode& n = s.nodes[static_cast<size_t>(index)];
         const Node& d = s.doc.nodes[n.src];
+        if (d.widget == WidgetKind::TextInput) { // 필드 값 그대로 (비어 있으면 자리 표시 글자)
+            n.placeholder = false;
+            const reflect::ValueInfo* v = nullptr;
+            void* data = nullptr;
+            if (resolve(s, n, d.field, v, data) && v->kind == reflect::Kind::String) {
+                const std::string& value = *static_cast<const std::string*>(data);
+                if (!value.empty() || s.editing == index) return value;
+            } else if (s.vm.type) {
+                bindingError(s, "text input '" + d.field + "' is not a string field in " + s.vm.type->name);
+            }
+            n.placeholder = true;
+            return d.placeholderKey.empty() ? std::string() : (strings ? strings->get(d.placeholderKey) : d.placeholderKey);
+        }
         const std::string& source = !d.textKey.empty() ? (strings ? strings->get(d.textKey) : d.textKey) : d.textContent;
         std::string out;
         for (size_t i = 0; i < source.size(); ++i) {
@@ -659,6 +674,7 @@ struct System::Impl {
     void rebuild(Screen& s) {
         const ScreenId keepFocus = s.focus >= 0 ? s.nodes[static_cast<size_t>(s.focus)].src : 0xFFFFFFFFu;
         const i32 keepList = s.focus >= 0 ? s.nodes[static_cast<size_t>(s.focus)].listIndex : -1;
+        const bool keepEditing = s.editing >= 0 && s.editing == s.focus;
         std::vector<RNode> old = std::move(s.nodes);
         s.nodes.clear();
         s.listCounts.clear();
@@ -673,6 +689,7 @@ struct System::Impl {
                     break;
                 }
         }
+        s.editing = keepEditing ? s.focus : -1;
         s.rebuild = false;
     }
 
@@ -1004,10 +1021,15 @@ struct System::Impl {
 
     // ---------------------------------------------------------------- 그리기
 
-    void emitText(Screen& s, const RNode& n, const Node& d, const Visual& v, f32 opacity, const f32 clip[4]) {
+    void emitText(Screen& s, const RNode& n, const Node& d, const Visual& v, f32 opacity, const f32 clip[4], bool caret) {
         const Shaped& sh = n.shaped;
         const f32 k = s.scale;
+        if (n.placeholder) opacity *= 0.45f;
         f32 y = n.rect.y;
+        f32 caretX = d.textAlign == TextAlign::Center ? n.rect.x + n.rect.w * 0.5f
+                     : d.textAlign == TextAlign::Right ? n.rect.x + n.rect.w
+                                                        : n.rect.x;
+        f32 caretY = y, caretH = d.text.size * d.lineHeight;
         if (d.hMode != SizeMode::Hug) {
             if (d.verticalAlign == VerticalAlign::Center) y += (n.rect.h - sh.height) * 0.5f;
             else if (d.verticalAlign == VerticalAlign::Bottom) y += n.rect.h - sh.height;
@@ -1018,6 +1040,9 @@ struct System::Impl {
             if (d.textAlign == TextAlign::Center) x += (n.rect.w - line.width) * 0.5f;
             else if (d.textAlign == TextAlign::Right) x += n.rect.w - line.width;
             const f32 baseline = y + (line.height - (line.ascent + line.descent)) * 0.5f + line.ascent;
+            caretX = x + line.width;
+            caretY = y;
+            caretH = line.height;
             for (u32 i = line.begin; i < line.end; ++i) {
                 const ShapedGlyph& g = sh.glyphs[i];
                 const TextRun& run = sh.runs[g.run];
@@ -1060,6 +1085,17 @@ struct System::Impl {
                 x += g.advance;
             }
             y += line.height;
+        }
+        if (caret && !n.placeholder) { // 글자 입력 중: 끝에 깜박이는 세로 막대
+            render::UiQuad q;
+            q.rect[0] = s.originX + caretX * k;
+            q.rect[1] = s.originY + (caretY + caretH * 0.1f) * k;
+            q.rect[2] = std::max(1.0f, 2.0f * k);
+            q.rect[3] = caretH * 0.8f * k;
+            std::memcpy(q.clip, clip, sizeof(q.clip));
+            q.color0 = withAlpha(v.textColor.rgba, opacity);
+            q.flags = render::kUiShape;
+            quads.push_back(q);
         }
     }
 
@@ -1158,7 +1194,7 @@ struct System::Impl {
                 }
             }
         }
-        if (d.kind == NodeKind::Text) emitText(s, n, d, v, opacity, clip);
+        if (d.kind == NodeKind::Text) emitText(s, n, d, v, opacity, clip, index == s.editing && std::fmod(time, 1.0) < 0.6);
         // 포커스 표시 (게임패드·키보드로 옮길 때)
         if (index == s.focus && (focusVisible || focusAlways) && d.widget != WidgetKind::None && d.widget != WidgetKind::List) {
             render::UiQuad q;
@@ -1258,6 +1294,7 @@ struct System::Impl {
                 emit(s, index, d.action.empty() ? "changed" : d.action, d.field);
             }
             break;
+        case WidgetKind::TextInput: s.editing = index; break; // 글자 치기 시작 (Enter: 액션, Esc: 그만)
         case WidgetKind::Slider:
             if (resolve(s, n, d.field, v, data)) {
                 const f64 stepSize = d.sliderStep > 0 ? d.sliderStep : (d.sliderMax - d.sliderMin) / 20.0;
@@ -1343,6 +1380,7 @@ struct System::Impl {
             const i32 h = mouseTaken ? -1 : hit(s, lx, ly, blocks);
             if (blocks) mouseTaken = true;
             s.hover = h;
+            if (clicked && s.editing >= 0 && h != s.editing) s.editing = -1; // 다른 곳을 누르면 글자 치기를 그만둔다
             if (clicked && h >= 0) {
                 s.pressed = h;
                 if (focusable(s, h)) s.focus = h;
@@ -1375,8 +1413,19 @@ struct System::Impl {
         }
         wantsMouse = mouseTaken;
 
+        // 글자 입력 중이면 키보드는 그 칸만 받는다 (ui.* 이동·확인·뒤로도 쓰지 않는다)
+        Screen* typing = nullptr;
+        for (Screen* sp : order)
+            if (sp->editing >= 0) {
+                typing = sp;
+                break;
+            }
+        if (typing) {
+            if (in.keyboardAllowed && in.input) editText(*typing, *in.input);
+            wantsKeyboard = true;
+        }
         // 키보드·게임패드: 포커스할 위젯이 있는 가장 위 화면
-        if (in.keyboardAllowed && in.actions) {
+        else if (in.keyboardAllowed && in.actions) {
             const input::Actions& a = *in.actions;
             for (Screen* sp : order) {
                 Screen& s = *sp;
@@ -1430,6 +1479,41 @@ struct System::Impl {
                 for (int st = 1; st < static_cast<int>(State::Count); ++st)
                     n.mix[st] = std::clamp(n.mix[st] + (target[st] ? rate : -rate), 0.0f, 1.0f);
             }
+    }
+
+    void editText(Screen& s, const Input& input) {
+        RNode& n = s.nodes[static_cast<size_t>(s.editing)];
+        const Node& d = s.doc.nodes[n.src];
+        const reflect::ValueInfo* v = nullptr;
+        void* data = nullptr;
+        if (!n.visible || n.disabled || d.widget != WidgetKind::TextInput || !resolve(s, n, d.field, v, data) ||
+            v->kind != reflect::Kind::String) {
+            s.editing = -1;
+            return;
+        }
+        std::string& value = *static_cast<std::string*>(data);
+        for (u32 i = 0; i < input.backspaces() && !value.empty(); ++i) { // 마지막 글자 (UTF-8 이어지는 바이트까지)
+            size_t end = value.size() - 1;
+            while (end > 0 && (static_cast<u8>(value[end]) & 0xC0) == 0x80) --end;
+            value.resize(end);
+        }
+        u32 count = static_cast<u32>(decodeUtf8(value).size());
+        const std::string& text = input.text();
+        for (size_t at = 0; at < text.size();) { // 최대 글자 수까지 UTF-8 그대로 붙인다
+            size_t len = 1;
+            while (at + len < text.size() && (static_cast<u8>(text[at + len]) & 0xC0) == 0x80) ++len;
+            if (count < d.maxLength) {
+                value.append(text, at, len);
+                ++count;
+            }
+            at += len;
+        }
+        if (input.keyPressed(key::Enter)) {
+            emit(s, s.editing, d.action.empty() ? "submit" : d.action, d.field);
+            s.editing = -1;
+        } else if (input.keyPressed(key::Escape)) {
+            s.editing = -1;
+        }
     }
 
     void reloadChanged() {
@@ -1627,6 +1711,35 @@ bool System::press(ScreenId screen, const std::string& nodeName) {
             m->activate(*s, static_cast<i32>(i));
             return true;
         }
+    return false;
+}
+
+bool System::pressAny(const std::string& nodeName) {
+    std::vector<Screen*> order;
+    for (Screen& s : m->screens)
+        if (!s.worldTemplate) order.push_back(&s);
+    std::stable_sort(order.begin(), order.end(), [](const Screen* a, const Screen* b) { return a->layer > b->layer; });
+    for (Screen* s : order)
+        if (press(s->id, nodeName)) return true;
+    return false;
+}
+
+bool System::focusText(ScreenId screen, const std::string& nodeName) {
+    Screen* s = m->find(screen);
+    if (!s) return false;
+    if (s->rebuild) m->prepare(*s, m->viewW, m->viewH);
+    for (size_t i = 0; i < s->nodes.size(); ++i) {
+        const Node& d = s->doc.nodes[s->nodes[i].src];
+        if (d.name != nodeName || d.widget != WidgetKind::TextInput || !m->focusable(*s, static_cast<i32>(i))) continue;
+        s->focus = s->editing = static_cast<i32>(i);
+        return true;
+    }
+    return false;
+}
+
+bool System::editingText() const {
+    for (const Screen& s : m->screens)
+        if (s.editing >= 0) return true;
     return false;
 }
 

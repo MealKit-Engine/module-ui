@@ -31,6 +31,7 @@ class Actions;
 //   UI는 시뮬레이션 상태를 고치지 않는다. 입력 위젯(토글·슬라이더·선택)만 자기 뷰 모델 필드에 값을 쓰고 액션을 낸다.
 //   좌표는 보드(기준 1920×1080)의 논리 단위, 배율 = min(가로/보드 가로, 세로/보드 세로) × UI 배율.
 //   파일(.ui, 테마, 글꼴, 이미지)이 바뀌면 다시 읽는다. 조작은 마우스, 그리고 입력 액션 ui.up/down/left/right/confirm/back(키보드·게임패드).
+//   글자 입력(textInput)은 키보드로 친 글자(Input::text)를 문자열 필드에 쓰고, Enter면 액션을 낸다 (치는 동안 게임은 키보드를 받지 않는다).
 namespace mealkit::ui {
 
 using ScreenId = u32;
@@ -122,6 +123,12 @@ public:
     u32 quadCount() const;             // 지난 render의 사각형 수
     // 위젯 조작 시험용: 노드 이름으로 누른 것처럼 (자동 시험·미리보기)
     bool press(ScreenId screen, const std::string& nodeName);
+    // 열린 화면 중 위에서부터 이 이름의 위젯을 찾아 누른다 (자동 시험 --ui-press)
+    bool pressAny(const std::string& nodeName);
+    // 글자 입력 칸에서 글자 치기를 시작한다 (채팅 키 등). 그 노드가 글자 입력이 아니면 false
+    bool focusText(ScreenId screen, const std::string& nodeName);
+    // 어느 화면에서든 글자를 치는 중이다 (게임은 키보드를 받지 않는다)
+    bool editingText() const;
 
 private:
     struct Impl;

@@ -38,7 +38,7 @@ enum class Justify : u8 { Start, Center, End, SpaceBetween, SpaceAround, SpaceEv
 enum class Align : u8 { Auto, Start, Center, End, Stretch };
 enum class Constraint : u8 { Start, End, Both, Center, Scale }; // 가로: left/right/leftright/center/scale
 enum class PaintKind : u8 { None, Solid, Linear, Radial };
-enum class WidgetKind : u8 { None, Button, Toggle, Slider, Select, Scroll, List };
+enum class WidgetKind : u8 { None, Button, Toggle, Slider, Select, Scroll, List, TextInput };
 enum class TextAlign : u8 { Left, Center, Right };
 enum class VerticalAlign : u8 { Top, Center, Bottom };
 enum class WrapMode : u8 { Word, Syllable, None };
@@ -154,6 +154,8 @@ struct Node {
     std::string field;  // 토글·슬라이더·선택·목록: 뷰 모델 필드
     f32 sliderMin = 0, sliderMax = 1, sliderStep = 0;
     std::vector<std::string> options; // 선택 상자: 문자열 표 키들
+    std::string placeholderKey;       // 글자 입력: 비어 있을 때 흐리게 보일 문자열 표 키
+    u32 maxLength = 64;               // 글자 입력: 최대 글자 수
     bool scrollHorizontal = false;
     std::string focusNext[4]; // 위, 아래, 왼쪽, 오른쪽으로 갈 노드 이름 (비면 가장 가까운 것)
 };
