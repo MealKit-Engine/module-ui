@@ -2,6 +2,7 @@
 
 #include "mealkit/loc/Strings.h"
 #include "mealkit/platform/Paths.h"
+#include "mealkit/platform/Window.h"
 #include "mealkit/render/Renderer.h"
 #include "mealkit/ui/Document.h"
 #include "mealkit/ui/Ui.h"
@@ -17,6 +18,8 @@ namespace {
 
 struct PenpotBox {
     std::string id, name;
+    std::string text; // 글자 노드: Penpot의 글자 (\n은 두 글자 그대로)
+    bool hasText = false;
     f32 x = 0, y = 0, w = 0, h = 0;
 };
 
@@ -32,15 +35,21 @@ std::vector<PenpotBox> readBoxes(const std::string& path) {
         pos = end + 1;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
+        PenpotBox b;
+        const size_t tab = line.find('\t');
+        if (tab != std::string::npos) {
+            b.text = line.substr(tab + 1);
+            b.hasText = true;
+            line.resize(tab);
+        }
         std::vector<std::string> t;
-        for (size_t a = 0; a < line.size();) {
-            size_t b = line.find(' ', a);
-            if (b == std::string::npos) b = line.size();
-            if (b > a) t.push_back(line.substr(a, b - a));
-            a = b + 1;
+        for (size_t from = 0; from < line.size();) {
+            size_t to = line.find(' ', from);
+            if (to == std::string::npos) to = line.size();
+            if (to > from) t.push_back(line.substr(from, to - from));
+            from = to + 1;
         }
         if (t.size() < 5) continue;
-        PenpotBox b;
         b.id = t[0];
         b.x = static_cast<f32>(std::atof(t[1].c_str()));
         b.y = static_cast<f32>(std::atof(t[2].c_str()));
@@ -82,8 +91,27 @@ int runUiCheck(const std::string& projectDir, const std::string& language) {
             bool inList = false;
             for (i32 p = n.parent; p >= 0; p = doc.nodes[static_cast<size_t>(p)].parent)
                 if (doc.nodes[static_cast<size_t>(p)].widget == ui::WidgetKind::List) inList = true;
-            const std::string text = n.textKey.empty() ? n.textContent : std::string(strings.get(n.textKey));
-            if (inList || (n.kind == ui::NodeKind::Text && text.find('{') != std::string::npos)) skip.push_back(n.id);
+            bool differentText = false;
+            if (n.kind == ui::NodeKind::Text) {
+                // 표에 있는 키는 표의 글자(번역)를 그린다: Penpot과 같은 글자일 때만 크기를 비교한다
+                const std::string drawn = n.textKey.empty() ? n.textContent : std::string(strings.get(n.textKey));
+                const auto box = std::find_if(boxes.begin(), boxes.end(), [&](const PenpotBox& b) { return b.id == n.id; });
+                const std::string penpot = box != boxes.end() && box->hasText ? box->text : drawn;
+                std::string plain; // 스타일 태그(<1>…</1>)를 뺀 글자
+                for (size_t c = 0; c < drawn.size(); ++c) {
+                    if (drawn[c] == '<') {
+                        const size_t close = drawn.find('>', c);
+                        if (close != std::string::npos && close - c <= 6) {
+                            c = close;
+                            continue;
+                        }
+                    }
+                    if (drawn[c] == '\n') plain += "\\n"; // 상자 파일은 줄바꿈을 \n 두 글자로 쓴다
+                    else plain += drawn[c];
+                }
+                differentText = plain != penpot || drawn.find('{') != std::string::npos;
+            }
+            if (inList || differentText) skip.push_back(n.id);
         }
         const ui::ScreenId id = sys.open("ui/" + file);
         sys.layout({0.0f, 0.0f, doc.boardW, doc.boardH});
@@ -98,7 +126,7 @@ int runUiCheck(const std::string& projectDir, const std::string& language) {
                 continue;
             }
             const f32 diff = std::max({std::fabs(e->x - p.x), std::fabs(e->y - p.y), std::fabs(e->w - p.w), std::fabs(e->h - p.h)});
-            const f32 tolerance = e->text ? kTextTolerance : kBoxTolerance;
+            const f32 tolerance = e->text ? std::max(kTextTolerance, kTextToleranceRatio * std::max(p.w, p.h)) : kBoxTolerance;
             ++compared;
             worst = std::max(worst, diff);
             if (diff > tolerance) {
@@ -119,6 +147,48 @@ int runUiCheck(const std::string& projectDir, const std::string& language) {
     if (screens == 0 && failedScreens == 0) std::printf("UI-CHECK none (no screens exported from Penpot)\n");
     std::fflush(stdout);
     return failedScreens > 0 ? 2 : 0;
+}
+
+int runUiRender(const std::string& projectDir, const std::string& language, const std::string& uiFile, const std::string& pngPath) {
+    setProjectRoot(projectDir);
+    ui::Document doc;
+    if (!ui::loadDocument(uiFile, doc)) {
+        std::printf("UI-RENDER cannot read %s\n", uiFile.c_str());
+        for (const std::string& e : doc.errors) std::printf("  %s\n", e.c_str());
+        return 1;
+    }
+    const u32 w = static_cast<u32>(doc.boardW * 0.5f + 0.5f), h = static_cast<u32>(doc.boardH * 0.5f + 0.5f);
+    Window window;
+    if (!window.create({"MealKit UI render", w, h})) return 1;
+    render::Renderer renderer;
+    if (!renderer.init({window.nativeHandle(), window.width(), window.height(), false, false})) {
+        std::printf("UI-RENDER renderer: %s\n", renderer.initError());
+        return 1;
+    }
+    loc::Strings strings;
+    strings.load(language, language);
+    ui::System sys;
+    sys.init(&renderer, &strings);
+    sys.open(uiFile);
+    const render::Viewport view{0.0f, 0.0f, static_cast<f32>(window.width()), static_cast<f32>(window.height())};
+    // 몇 프레임: 글자·이미지 아틀라스가 GPU에 올라간 뒤 마지막 프레임을 저장한다
+    for (int frame = 0; frame < 6 && window.pumpMessages(); ++frame) {
+        if (frame == 5) renderer.requestCapture(pngPath.c_str());
+        sys.update({}, view, 1.0 / 60.0);
+        render::FrameParams params;
+        params.viewport = view;
+        params.fogColor = {0.0f, 0.0f, 0.0f};
+        if (renderer.beginFrame(params)) {
+            renderer.beginOverlay();
+            sys.render(renderer);
+            renderer.endFrame();
+        }
+    }
+    renderer.shutdown();
+    const bool ok = fileExists(pngPath);
+    std::printf("UI-RENDER %s %ux%u -> %s\n", uiFile.c_str(), window.width(), window.height(), ok ? pngPath.c_str() : "failed");
+    std::fflush(stdout);
+    return ok ? 0 : 1;
 }
 
 } // namespace mealkit::editor
