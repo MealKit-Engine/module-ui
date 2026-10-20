@@ -88,6 +88,18 @@ void UiPanel::draw(bool* open) {
     }
     if (ImGui::SmallButton(tr("Refresh"))) refresh();
 
+    // Penpot 플러그인: 이 주소를 Penpot의 플러그인 관리자(Ctrl+Alt+P)에 붙여 넣는다. 에디터를 켤 때마다 바뀐다
+    ImGui::SeparatorText("Penpot");
+    if (m_penpotUrl.empty()) {
+        ImGui::TextDisabled("%s", tr("The import server is not running (see the log)."));
+    } else {
+        ImGui::TextWrapped("%s", tr("Plugin address (paste it into the plugin manager in Penpot, Ctrl+Alt+P). It changes every time the editor starts."));
+        ImGui::SetNextItemWidth(-60.0f);
+        ImGui::InputText("##penpotUrl", m_penpotUrl.data(), m_penpotUrl.size() + 1, ImGuiInputTextFlags_ReadOnly);
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Copy"))) ImGui::SetClipboardText(m_penpotUrl.c_str());
+    }
+
     ImGui::SeparatorText(tr("Screen preview"));
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::BeginCombo("##resolution", kResolutions[m_resolution].label)) {

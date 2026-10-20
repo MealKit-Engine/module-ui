@@ -10,7 +10,8 @@
 //
 //   board hud 1920 1080          ← 뿌리 보드 (기준 해상도의 논리 단위). 보드 줄: navigation(키보드·게임패드 포커스), firstFocus, back
 //     frame topBar
-//       layout row               ← Flex: row|column [reverse] [wrap]
+//       layout row               ← Flex: row|column [reverse] [wrap] / Grid: layout grid [row|column] + columns·rows
+//       columns 200 1fr auto 25%  ← Grid 트랙: 고정 / fr(남는 자리 비율) / auto(내용) / %(안쪽 크기 기준). 자식은 cell <행> <열> [행 수 열 수]
 //       size fill hug            ← 숫자 / hug(내용에 맞춤) / fill(채우기)
 //       padding 24 32
 //       gap 16
@@ -33,7 +34,8 @@ namespace mealkit::ui {
 
 enum class NodeKind : u8 { Frame, Text, Image };
 enum class SizeMode : u8 { Fixed, Hug, Fill };
-enum class LayoutKind : u8 { None, Flex };
+enum class LayoutKind : u8 { None, Flex, Grid };
+enum class TrackKind : u8 { Fixed, Flex, Percent, Auto };
 enum class Justify : u8 { Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly };
 enum class Align : u8 { Auto, Start, Center, End, Stretch };
 enum class Constraint : u8 { Start, End, Both, Center, Scale }; // 가로: left/right/leftright/center/scale
@@ -90,6 +92,12 @@ struct TextStyle {
     TextTransform transform = TextTransform::None;
 };
 
+// Grid 트랙 하나 (Penpot의 Track과 같다)
+struct Track {
+    TrackKind kind = TrackKind::Auto;
+    f32 value = 0.0f; // 고정: 논리 단위, Flex: fr, Percent: %
+};
+
 struct SpanStyle {
     u32 tag = 0; // <tag>…</tag>
     // 설정된 것만 덮어쓴다
@@ -103,6 +111,7 @@ struct SpanStyle {
 
 struct Node {
     std::string name;
+    std::string id; // Penpot 도형 id (내보낸 파일, 배치 비교가 노드를 찾는다)
     NodeKind kind = NodeKind::Frame;
     i32 parent = -1;
     u32 depth = 0;
@@ -125,6 +134,12 @@ struct Node {
     Justify justify = Justify::Start;
     Align alignItems = Align::Start, alignContent = Align::Start, alignSelf = Align::Auto;
     Justify alignContentJustify = Justify::Start; // 여러 줄 배분 (space-*)
+    // Grid (layout grid): 트랙, 칸 안 가로 정렬, 남는 자리 배분(justify: 가로, alignContent: 세로, stretch면 auto 트랙이 늘어난다)
+    std::vector<Track> rows, columns;
+    bool gridColumnFlow = false; // 자동 배치 방향: false = 행을 먼저 채운다
+    Align justifyItems = Align::Start, justifySelf = Align::Auto;
+    bool justifyStretch = false;
+    u16 cellRow = 0, cellColumn = 0, rowSpan = 1, columnSpan = 1; // 칸 (1부터, 0 = 자동 배치)
 
     Visual visual;
     std::vector<StateOverride> states;

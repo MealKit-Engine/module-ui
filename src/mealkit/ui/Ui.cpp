@@ -502,6 +502,18 @@ struct System::Impl {
             outH = d.hMode == SizeMode::Fixed ? d.h : n.shaped.height;
             return;
         }
+        if (d.layout == LayoutKind::Grid) {
+            std::vector<i32> flow;
+            for (i32 c = index + 1; c < static_cast<i32>(n.end); c = static_cast<i32>(s.nodes[static_cast<size_t>(c)].end))
+                if (s.nodes[static_cast<size_t>(c)].visible && !s.doc.nodes[s.nodes[static_cast<size_t>(c)].src].absolute) flow.push_back(c);
+            const f32 innerW = d.wMode == SizeMode::Fixed ? d.w - d.padding[1] - d.padding[3] : -1.0f;
+            const f32 innerH = d.hMode == SizeMode::Fixed ? d.h - d.padding[0] - d.padding[2] : -1.0f;
+            std::vector<f32> cols, rows;
+            gridSolve(s, d, gridItems(s, d, flow), innerW, innerH, cols, rows);
+            outW = d.wMode == SizeMode::Fixed ? d.w : trackSum(cols, d.columnGap) + d.padding[1] + d.padding[3];
+            outH = d.hMode == SizeMode::Fixed ? d.h : trackSum(rows, d.rowGap) + d.padding[0] + d.padding[2];
+            return;
+        }
         if (d.layout != LayoutKind::Flex) {
             outW = d.w;
             outH = d.h;
@@ -602,10 +614,11 @@ struct System::Impl {
             const Node& cd = s.doc.nodes[cn.src];
             cn.visible = !cd.hidden && (cd.visibleField.empty() || flag(s, cn, cd.visibleField));
             if (!cn.visible) continue;
-            if (d.layout != LayoutKind::Flex || cd.absolute) placeConstrained(s, c, r, designW, designH, sx, sy);
+            if (d.layout == LayoutKind::None || cd.absolute) placeConstrained(s, c, r, designW, designH, sx, sy);
             else flow.push_back(c);
         }
         if (d.layout == LayoutKind::Flex && !flow.empty()) flex(s, index, flow, sx, sy);
+        if (d.layout == LayoutKind::Grid && !flow.empty()) grid(s, index, flow, sx, sy);
         // 스크롤 영역: 내용 끝
         if (scroll) {
             f32 extent = 0.0f;
@@ -763,6 +776,182 @@ struct System::Impl {
                 pos += it.main + it.m1 + between;
             }
             crossPos += line.cross + crossBetween;
+        }
+    }
+
+    // ---------------------------------------------------------------- Grid
+
+    struct GridItem {
+        i32 node;
+        u32 row, col, rowSpan, colSpan; // 0부터
+    };
+
+    // 자식마다 칸을 정한다: cell이 있으면 그 칸, 없으면 빈 칸을 행(또는 열) 순서로. 트랙 밖이면 마지막 트랙으로 자른다
+    std::vector<GridItem> gridItems(Screen& s, const Node& d, const std::vector<i32>& flow) {
+        const u32 rows = static_cast<u32>(std::max<size_t>(1, d.rows.size())), cols = static_cast<u32>(std::max<size_t>(1, d.columns.size()));
+        std::vector<u8> used(static_cast<size_t>(rows) * cols, 0);
+        auto mark = [&](const GridItem& it) {
+            for (u32 r = it.row; r < it.row + it.rowSpan; ++r)
+                for (u32 c = it.col; c < it.col + it.colSpan; ++c) used[static_cast<size_t>(r) * cols + c] = 1;
+        };
+        std::vector<GridItem> items;
+        for (i32 c : flow) { // 정한 칸 먼저
+            const Node& cd = s.doc.nodes[s.nodes[static_cast<size_t>(c)].src];
+            GridItem it{c, 0, 0, 1, 1};
+            if (cd.cellRow > 0 && cd.cellColumn > 0) {
+                it.row = std::min<u32>(cd.cellRow - 1u, rows - 1);
+                it.col = std::min<u32>(cd.cellColumn - 1u, cols - 1);
+                it.rowSpan = std::clamp<u32>(cd.rowSpan, 1, rows - it.row);
+                it.colSpan = std::clamp<u32>(cd.columnSpan, 1, cols - it.col);
+                mark(it);
+            } else {
+                it.row = it.col = ~0u;
+            }
+            items.push_back(it);
+        }
+        u32 cursor = 0;
+        for (GridItem& it : items) {
+            if (it.row != ~0u) continue;
+            while (cursor < rows * cols) {
+                const u32 r = d.gridColumnFlow ? cursor % rows : cursor / cols;
+                const u32 c = d.gridColumnFlow ? cursor / rows : cursor % cols;
+                ++cursor;
+                if (!used[static_cast<size_t>(r) * cols + c]) {
+                    it.row = r;
+                    it.col = c;
+                    break;
+                }
+            }
+            if (it.row == ~0u) it.row = rows - 1, it.col = cols - 1; // 칸이 모자라면 마지막 칸에 겹친다
+            mark(it);
+        }
+        return items;
+    }
+
+    // 트랙 크기: 고정·%는 그대로, auto는 한 칸짜리 자식의 가장 큰 크기, fr은 남는 자리를 비율로(최소는 내용).
+    // inner < 0이면 내용에 맞춘 크기(%와 fr은 auto처럼). fr이 없고 stretch면 남는 자리를 auto 트랙이 나눈다
+    static void gridTracks(const std::vector<Track>& tracks, f32 inner, f32 gap, const std::vector<f32>& content, bool stretch,
+                           std::vector<f32>& out) {
+        const size_t n = std::max<size_t>(1, tracks.size());
+        out.assign(n, 0.0f);
+        f32 used = gap * static_cast<f32>(n - 1), fr = 0.0f;
+        u32 autos = 0;
+        for (size_t i = 0; i < n; ++i) {
+            const Track t = i < tracks.size() ? tracks[i] : Track{};
+            const f32 c = i < content.size() ? content[i] : 0.0f;
+            switch (t.kind) {
+            case TrackKind::Fixed: out[i] = t.value; break;
+            case TrackKind::Percent: out[i] = inner >= 0.0f ? inner * t.value * 0.01f : c; break;
+            case TrackKind::Auto: out[i] = c, ++autos; break;
+            case TrackKind::Flex: out[i] = c, fr += t.value; break;
+            }
+            if (t.kind != TrackKind::Flex) used += out[i];
+        }
+        if (inner < 0.0f) return;
+        if (fr > 0.0f) {
+            // 내용보다 작아지는 fr 트랙은 내용 크기로 고정하고 나머지로 다시 나눈다
+            std::vector<u8> fixed(n, 0);
+            for (int pass = 0; pass < 4; ++pass) {
+                f32 left = inner - used, frLeft = 0.0f;
+                for (size_t i = 0; i < n; ++i)
+                    if (i < tracks.size() && tracks[i].kind == TrackKind::Flex) {
+                        if (fixed[i]) left -= out[i];
+                        else frLeft += tracks[i].value;
+                    }
+                bool again = false;
+                for (size_t i = 0; i < n; ++i) {
+                    if (i >= tracks.size() || tracks[i].kind != TrackKind::Flex || fixed[i]) continue;
+                    const f32 c = i < content.size() ? content[i] : 0.0f;
+                    const f32 share = frLeft > 0.0f ? std::max(0.0f, left) * tracks[i].value / frLeft : 0.0f;
+                    if (share < c) fixed[i] = 1, out[i] = c, again = true;
+                    else out[i] = share;
+                }
+                if (!again) break;
+            }
+        } else if (stretch && autos > 0 && inner > used) {
+            const f32 extra = (inner - used) / static_cast<f32>(autos);
+            for (size_t i = 0; i < n; ++i)
+                if (i >= tracks.size() || tracks[i].kind == TrackKind::Auto) out[i] += extra;
+        }
+    }
+
+    // 열을 먼저 정하고(글자 줄바꿈 없이), 그 너비로 행 높이를 정한다. innerW·innerH < 0이면 내용에 맞춤
+    void gridSolve(Screen& s, const Node& d, const std::vector<GridItem>& items, f32 innerW, f32 innerH,
+                   std::vector<f32>& colSizes, std::vector<f32>& rowSizes) {
+        std::vector<f32> colContent(std::max<size_t>(1, d.columns.size()), 0.0f), rowContent(std::max<size_t>(1, d.rows.size()), 0.0f);
+        for (const GridItem& it : items) {
+            if (it.colSpan != 1) continue;
+            const Node& cd = s.doc.nodes[s.nodes[static_cast<size_t>(it.node)].src];
+            f32 w = 0, h = 0;
+            childSize(s, it.node, -1.0f, w, h);
+            colContent[it.col] = std::max(colContent[it.col], w + cd.margin[1] + cd.margin[3]);
+        }
+        gridTracks(d.columns, innerW, d.columnGap, colContent, d.justifyStretch, colSizes);
+        for (const GridItem& it : items) {
+            if (it.rowSpan != 1) continue;
+            const Node& cd = s.doc.nodes[s.nodes[static_cast<size_t>(it.node)].src];
+            f32 cellW = d.columnGap * static_cast<f32>(it.colSpan - 1);
+            for (u32 c = it.col; c < it.col + it.colSpan; ++c) cellW += colSizes[c];
+            f32 w = 0, h = 0;
+            childSize(s, it.node, cellW - cd.margin[1] - cd.margin[3], w, h);
+            rowContent[it.row] = std::max(rowContent[it.row], h + cd.margin[0] + cd.margin[2]);
+        }
+        gridTracks(d.rows, innerH, d.rowGap, rowContent, d.alignContent == Align::Stretch, rowSizes);
+    }
+
+    static f32 trackSum(const std::vector<f32>& sizes, f32 gap) {
+        f32 sum = gap * static_cast<f32>(sizes.size() - 1);
+        for (f32 v : sizes) sum += v;
+        return sum;
+    }
+
+    // 남는 자리 배분 (justify: 열, alignContent: 행) → 트랙 시작 위치
+    static void trackStarts(const std::vector<f32>& sizes, f32 gap, f32 inner, Justify j, Align a, std::vector<f32>& starts) {
+        const size_t n = sizes.size();
+        const f32 free = std::max(0.0f, inner - trackSum(sizes, gap));
+        f32 pos = 0.0f, between = gap;
+        if (a == Align::Center) pos = free * 0.5f;
+        else if (a == Align::End) pos = free;
+        else if (j == Justify::Center) pos = free * 0.5f;
+        else if (j == Justify::End) pos = free;
+        else if (j == Justify::SpaceBetween && n > 1) between += free / static_cast<f32>(n - 1);
+        else if (j == Justify::SpaceAround) between += free / static_cast<f32>(n), pos = free / static_cast<f32>(n) * 0.5f;
+        else if (j == Justify::SpaceEvenly) between += free / static_cast<f32>(n + 1), pos = free / static_cast<f32>(n + 1);
+        starts.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            starts[i] = pos;
+            pos += sizes[i] + between;
+        }
+    }
+
+    void grid(Screen& s, i32 index, const std::vector<i32>& flow, f32 sx, f32 sy) {
+        const RNode& n = s.nodes[static_cast<size_t>(index)];
+        const Node& d = s.doc.nodes[n.src];
+        const Rect r = n.rect;
+        const f32 innerX = r.x + d.padding[3] - sx, innerY = r.y + d.padding[0] - sy;
+        const f32 innerW = std::max(0.0f, r.w - d.padding[1] - d.padding[3]);
+        const f32 innerH = std::max(0.0f, r.h - d.padding[0] - d.padding[2]);
+        const std::vector<GridItem> items = gridItems(s, d, flow);
+        std::vector<f32> cols, rows, colStart, rowStart;
+        gridSolve(s, d, items, innerW, innerH, cols, rows);
+        // 열 배분은 justify, 행 배분은 alignContent (Align이 start·center·end면 그것, 아니면 space-*)
+        trackStarts(cols, d.columnGap, innerW, d.justify, Align::Start, colStart);
+        trackStarts(rows, d.rowGap, innerH, d.alignContentJustify, d.alignContent, rowStart);
+        for (const GridItem& it : items) {
+            const Node& cd = s.doc.nodes[s.nodes[static_cast<size_t>(it.node)].src];
+            const u32 c1 = it.col + it.colSpan - 1, r1 = it.row + it.rowSpan - 1;
+            const f32 cellX = colStart[it.col] + cd.margin[3], cellY = rowStart[it.row] + cd.margin[0];
+            const f32 cellW = std::max(0.0f, colStart[c1] + cols[c1] - colStart[it.col] - cd.margin[1] - cd.margin[3]);
+            const f32 cellH = std::max(0.0f, rowStart[r1] + rows[r1] - rowStart[it.row] - cd.margin[0] - cd.margin[2]);
+            f32 w = 0, h = 0;
+            childSize(s, it.node, cellW, w, h);
+            const Align hAlign = cd.justifySelf != Align::Auto ? cd.justifySelf : d.justifyItems;
+            const Align vAlign = cd.alignSelf != Align::Auto ? cd.alignSelf : d.alignItems;
+            if (cd.wMode == SizeMode::Fill || (hAlign == Align::Stretch && cd.wMode != SizeMode::Fixed)) w = std::clamp(cellW, cd.minW, cd.maxW);
+            if (cd.hMode == SizeMode::Fill || (vAlign == Align::Stretch && cd.hMode != SizeMode::Fixed)) h = std::clamp(cellH, cd.minH, cd.maxH);
+            const f32 ox = hAlign == Align::Center ? (cellW - w) * 0.5f : hAlign == Align::End ? cellW - w : 0.0f;
+            const f32 oy = vAlign == Align::Center ? (cellH - h) * 0.5f : vAlign == Align::End ? cellH - h : 0.0f;
+            place(s, it.node, {innerX + cellX + ox, innerY + cellY + oy, w, h});
         }
     }
 
@@ -1465,7 +1654,7 @@ std::vector<NodeBox> System::boxes(ScreenId screen) const {
     if (Screen* s = m->find(screen))
         for (const RNode& n : s->nodes) {
             const Node& d = s->doc.nodes[n.src];
-            out.push_back({d.name, n.rect.x, n.rect.y, n.rect.w, n.rect.h, d.depth, n.visible});
+            out.push_back({d.name, d.id, n.rect.x, n.rect.y, n.rect.w, n.rect.h, d.depth, n.visible, d.kind == NodeKind::Text});
         }
     return out;
 }

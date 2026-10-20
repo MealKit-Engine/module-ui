@@ -62,9 +62,11 @@ struct ScreenInfo {
 
 struct NodeBox {
     std::string name;
+    std::string id; // Penpot 도형 id (내보낸 파일만)
     f32 x, y, w, h; // 논리 단위 (보드 왼쪽 위 기준)
     u32 depth;
     bool visible;
+    bool text; // 글자 노드 (배치 비교는 글꼴 차이만큼 느슨하게 본다)
 };
 
 class System {

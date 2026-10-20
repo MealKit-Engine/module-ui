@@ -21,11 +21,12 @@ public:
     void setViewModels(const std::vector<const reflect::TypeInfo*>* types);
     void draw(bool* open);
     void select(const std::string& uiFile); // 자동 테스트: "hud.ui"
+    void refresh();                         // assets/ui 파일 목록 다시 읽기
+    void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot 플러그인 설치 주소 (가져오기 서버)
     // 편집 모드에서 패널이 열려 있으면 씬 뷰 위에 그린다 (3D 다음, 에디터 UI 전)
     void render(render::Renderer& renderer, const render::Viewport& sceneView, f64 dt);
 
 private:
-    void refresh();
     void openSelected();
     void bindViewModel();
 
@@ -43,6 +44,7 @@ private:
     const reflect::TypeInfo* m_vmType = nullptr;
     reflect::Instance m_vm;
     f64 m_refreshTimer = 0.0;
+    std::string m_penpotUrl;
 };
 
 } // namespace mealkit::editor
