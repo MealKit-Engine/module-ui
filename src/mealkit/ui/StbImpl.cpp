@@ -4,5 +4,6 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG // 모델 텍스처 (glTF는 PNG·JPEG, asset/TextureCache.cpp)
 #define STBI_NO_STDIO
 #include "stb_image.h"
