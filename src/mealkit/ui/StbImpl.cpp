@@ -5,5 +5,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG // 모델 텍스처 (glTF는 PNG·JPEG, asset/TextureCache.cpp)
+#if MEALKIT_DEBUG_UI
+#define STBI_ONLY_HDR // 하늘 HDRI 굽기 (asset/Environment.cpp, 개발 빌드만. 출시 빌드는 구운 캐시만 읽는다)
+#endif
 #define STBI_NO_STDIO
 #include "stb_image.h"
