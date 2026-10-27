@@ -70,6 +70,7 @@ struct Screen {
     ScreenId id = kNoScreen;
     i32 layer = 0;
     bool worldTemplate = false;
+    bool fresh = true; // 연 뒤 아직 update를 거치지 않았다: ui.* 액션은 연 프레임의 것이라 받지 않는다 (Esc로 열고 같은 Esc로 닫히지 않게)
     std::string path;
     unsigned long long fileTime = 0;
     Document doc;
@@ -1265,17 +1266,18 @@ struct System::Impl {
         }
     }
 
-    void setSlider(Screen& s, i32 index, f64 value) {
+    bool setSlider(Screen& s, i32 index, f64 value) { // 값이 바뀌어 액션을 냈으면 true
         RNode& n = s.nodes[static_cast<size_t>(index)];
         const Node& d = s.doc.nodes[n.src];
         const reflect::ValueInfo* v = nullptr;
         void* data = nullptr;
-        if (!resolve(s, n, d.field, v, data)) return;
+        if (!resolve(s, n, d.field, v, data)) return false;
         value = std::clamp(value, static_cast<f64>(d.sliderMin), static_cast<f64>(d.sliderMax));
         if (d.sliderStep > 0) value = d.sliderMin + std::round((value - d.sliderMin) / d.sliderStep) * d.sliderStep;
-        if (std::fabs(numberOf(*v, data) - value) < 1e-9) return;
+        if (std::fabs(numberOf(*v, data) - value) < 1e-9) return false;
         writeNumber(*v, data, value);
         emit(s, index, d.action.empty() ? "changed" : d.action, d.field);
+        return true;
     }
 
     i32 findByName(const Screen& s, const std::string& name) const {
@@ -1350,10 +1352,11 @@ struct System::Impl {
                 if (pd.widget == WidgetKind::Slider && down) {
                     const Rect r = s.nodes[static_cast<size_t>(s.pressed)].rect;
                     const f64 t = std::clamp((lx - r.x) / std::max(r.w, 1.0f), 0.0f, 1.0f);
-                    setSlider(s, s.pressed, pd.sliderMin + t * (pd.sliderMax - pd.sliderMin));
+                    if (setSlider(s, s.pressed, pd.sliderMin + t * (pd.sliderMax - pd.sliderMin))) actions.back().dragging = true;
                 }
                 if (!down) {
-                    if (s.pressed == h && pd.widget != WidgetKind::Slider) activate(s, h);
+                    if (pd.widget == WidgetKind::Slider) emit(s, s.pressed, pd.action.empty() ? "changed" : pd.action, pd.field); // 놓았다
+                    else if (s.pressed == h) activate(s, h);
                     s.pressed = -1;
                 }
             }
@@ -1389,6 +1392,7 @@ struct System::Impl {
             const input::Actions& a = *in.actions;
             for (Screen* sp : order) {
                 Screen& s = *sp;
+                if (s.fresh) break; // 맨 위가 방금 연 화면이면 이번에는 아래 화면에도 넘기지 않는다
                 bool any = false;
                 for (size_t i = 0; i < s.nodes.size() && !any && s.doc.navigation; ++i) any = focusable(s, static_cast<i32>(i));
                 if (a.pressed("ui.back") && !s.doc.backAction.empty()) {
@@ -1425,6 +1429,7 @@ struct System::Impl {
                 break;
             }
         }
+        for (Screen& s : screens) s.fresh = false;
 
         // 상태 섞기 (마우스 올림·눌림·포커스·비활성·켜짐)
         for (Screen& s : screens)

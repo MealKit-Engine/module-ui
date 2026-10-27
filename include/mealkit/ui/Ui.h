@@ -43,6 +43,7 @@ struct Action {
     std::string node;   // 낸 노드 이름
     std::string field;  // 입력 위젯: 바뀐 뷰 모델 필드
     i32 listIndex = -1; // 목록 안이면 몇 번째 항목인가
+    bool dragging = false; // 슬라이더를 마우스로 끄는 중 (놓으면 dragging=false로 한 번 더 낸다)
 };
 
 struct FrameInput {
