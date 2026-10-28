@@ -280,7 +280,7 @@ struct System::Impl {
     void loadScreen(Screen& s) {
         ensureTheme(); // 숫자 토큰($radius)은 읽을 때 푼다
         loadDocument(s.path, s.doc, &theme);
-        const std::string file = findAsset("assets/" + s.path);
+        const std::string file = findAssetFile(s.path);
         s.fileTime = file.empty() ? 0 : fileWriteTime(file);
         for (const std::string& e : s.doc.errors) MEALKIT_WARN("UI: %s", e.c_str());
         // 상태별 그리기 값을 미리 만든다
@@ -1492,7 +1492,7 @@ struct System::Impl {
             for (const std::string& e : errors) MEALKIT_WARN("UI: %s", e.c_str());
         }
         for (Screen& s : screens) {
-            const std::string file = findAsset("assets/" + s.path);
+            const std::string file = findAssetFile(s.path);
             const unsigned long long t = file.empty() ? 0 : fileWriteTime(file);
             if (themeChanged || t != s.fileTime) {
                 loadScreen(s);
