@@ -18,7 +18,7 @@ namespace {
 
 struct PenpotBox {
     std::string id, name;
-    std::string text; // 글자 노드: Penpot의 글자 (\n은 두 글자 그대로)
+    std::string text; // text node: Penpot's text (\n kept as two characters)
     bool hasText = false;
     f32 x = 0, y = 0, w = 0, h = 0;
 };
@@ -82,7 +82,7 @@ int runUiCheck(const std::string& projectDir, const std::string& language) {
             continue;
         }
         ++screens;
-        // 건너뛸 노드: 바인딩이 있는 글자, 목록 안
+        // Nodes to skip: text with bindings, inside lists
         ui::Document doc;
         ui::loadDocument("ui/" + file, doc);
         std::vector<std::string> skip;
@@ -93,11 +93,11 @@ int runUiCheck(const std::string& projectDir, const std::string& language) {
                 if (doc.nodes[static_cast<size_t>(p)].widget == ui::WidgetKind::List) inList = true;
             bool differentText = false;
             if (n.kind == ui::NodeKind::Text) {
-                // 표에 있는 키는 표의 글자(번역)를 그린다: Penpot과 같은 글자일 때만 크기를 비교한다
+                // Keys in the table draw the table's text (translation): sizes are compared only when it's the same text as Penpot
                 const std::string drawn = n.textKey.empty() ? n.textContent : std::string(strings.get(n.textKey));
                 const auto box = std::find_if(boxes.begin(), boxes.end(), [&](const PenpotBox& b) { return b.id == n.id; });
                 const std::string penpot = box != boxes.end() && box->hasText ? box->text : drawn;
-                std::string plain; // 스타일 태그(<1>…</1>)를 뺀 글자
+                std::string plain; // text without style tags (<1>…</1>)
                 for (size_t c = 0; c < drawn.size(); ++c) {
                     if (drawn[c] == '<') {
                         const size_t close = drawn.find('>', c);
@@ -106,7 +106,7 @@ int runUiCheck(const std::string& projectDir, const std::string& language) {
                             continue;
                         }
                     }
-                    if (drawn[c] == '\n') plain += "\\n"; // 상자 파일은 줄바꿈을 \n 두 글자로 쓴다
+                    if (drawn[c] == '\n') plain += "\\n"; // box files write newlines as the two characters \n
                     else plain += drawn[c];
                 }
                 differentText = plain != penpot || drawn.find('{') != std::string::npos;
@@ -171,7 +171,7 @@ int runUiRender(const std::string& projectDir, const std::string& language, cons
     sys.init(&renderer, &strings);
     sys.open(uiFile);
     const render::Viewport view{0.0f, 0.0f, static_cast<f32>(window.width()), static_cast<f32>(window.height())};
-    // 몇 프레임: 글자·이미지 아틀라스가 GPU에 올라간 뒤 마지막 프레임을 저장한다
+    // A few frames: save the last frame after the text/image atlases are uploaded to the GPU
     for (int frame = 0; frame < 6 && window.pumpMessages(); ++frame) {
         if (frame == 5) renderer.requestCapture(pngPath.c_str());
         sys.update({}, view, 1.0 / 60.0);

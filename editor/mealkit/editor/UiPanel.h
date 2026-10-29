@@ -8,22 +8,22 @@
 #include <string>
 #include <vector>
 
-// 에디터 [UI] 패널: 게임 화면(assets/ui/*.ui) 미리보기. 고른 화면을 편집 모드의 씬 뷰 위에 그린다.
-// 해상도(비율)·UI 배율·언어(글자 넘침 확인)를 바꾸고, 게임의 뷰 모델(MEALKIT_VIEWMODEL)에 가짜 값을 넣어 본다.
-// 파일 오류·바인딩 오류(없는 필드)와 노드 수(예산 500)를 보여 준다. .ui를 고쳐 저장하면 바로 다시 읽는다.
+// Editor [UI] panel: preview of game screens (assets/ui/*.ui). Draws the chosen screen over the scene view in edit mode.
+// Change resolution (aspect), UI scale, language (to check text overflow), and put fake values into the game's view models (MEALKIT_VIEWMODEL).
+// Shows file errors, binding errors (missing fields), and node count (budget 500). Editing and saving a .ui rereads it immediately.
 namespace mealkit::editor {
 
 class UiPanel {
 public:
-    // 프로젝트를 열 때: 기본 언어 (mealkit.project의 language)
+    // When a project opens: default language (language in mealkit.project)
     void setProject(const std::string& defaultLanguage);
-    // 게임 DLL의 뷰 모델 목록 (GameModule::viewModels, DLL을 내리기 전에 nullptr)
+    // View model list of the game DLL (GameModule::viewModels, nullptr before unloading the DLL)
     void setViewModels(const std::vector<const reflect::TypeInfo*>* types);
     void draw(bool* open);
-    void select(const std::string& uiFile); // 자동 테스트: "hud.ui"
-    void refresh();                         // assets/ui 파일 목록 다시 읽기
-    void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot 플러그인 설치 주소 (가져오기 서버)
-    // 편집 모드에서 패널이 열려 있으면 씬 뷰 위에 그린다 (3D 다음, 에디터 UI 전)
+    void select(const std::string& uiFile); // automated tests: "hud.ui"
+    void refresh();                         // reread the assets/ui file list
+    void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot plugin install address (import server)
+    // In edit mode, draws over the scene view if the panel is open (after 3D, before editor UI)
     void render(render::Renderer& renderer, const render::Viewport& sceneView, f64 dt);
 
 private:

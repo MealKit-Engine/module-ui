@@ -37,7 +37,7 @@ void UiPanel::setProject(const std::string& defaultLanguage) {
 
 void UiPanel::setViewModels(const std::vector<const reflect::TypeInfo*>* types) {
     m_viewModels = types;
-    if (!types || std::find(types->begin(), types->end(), m_vmType) == types->end()) { // DLL이 바뀌면 타입이 무효
+    if (!types || std::find(types->begin(), types->end(), m_vmType) == types->end()) { // the type becomes invalid when the DLL changes
         if (m_screen) m_ui.bind(m_screen, reflect::View{});
         m_vm = {};
         m_vmType = nullptr;
@@ -88,7 +88,7 @@ void UiPanel::draw(bool* open) {
     }
     if (ImGui::SmallButton(tr("Refresh"))) refresh();
 
-    // Penpot 플러그인: 이 주소를 Penpot의 플러그인 관리자(Ctrl+Alt+P)에 붙여 넣는다. 에디터를 켤 때마다 바뀐다
+    // Penpot plugin: paste this address into Penpot's plugin manager (Ctrl+Alt+P). Changes every time the editor starts
     ImGui::SeparatorText("Penpot");
     if (m_penpotUrl.empty()) {
         ImGui::TextDisabled("%s", tr("The import server is not running (see the log)."));
@@ -164,7 +164,7 @@ void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneVi
         refresh();
     }
     if (!m_screen) return;
-    // 고른 해상도의 비율로 씬 뷰 안에 맞춘다 (그 크기가 들어가면 그 픽셀 크기 그대로)
+    // Fit inside the scene view at the chosen resolution's aspect (at that exact pixel size if it fits)
     const Resolution& r = kResolutions[m_resolution];
     const f32 vw = std::max(1.0f, sceneView.width), vh = std::max(1.0f, sceneView.height);
     f32 w = r.w, h = r.h;
@@ -174,7 +174,7 @@ void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneVi
         h *= k;
     }
     const render::Viewport view{sceneView.x + (vw - w) * 0.5f, sceneView.y + (vh - h) * 0.5f, w, h};
-    render::UiQuad frame; // 미리보기 영역 표시
+    render::UiQuad frame; // preview area indicator
     frame.rect[0] = view.x;
     frame.rect[1] = view.y;
     frame.rect[2] = view.width;

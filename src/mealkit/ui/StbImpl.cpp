@@ -1,12 +1,12 @@
-// stb_truetype(UI 글꼴 SDF)와 stb_image(UI 이미지 PNG) 구현. 외부 코드라 경고를 끈다 (engine/CMakeLists.txt).
+// stb_truetype (UI font SDF) and stb_image (UI image PNG) implementations. External code, so warnings are off (engine/CMakeLists.txt).
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
-#define STBI_ONLY_JPEG // 모델 텍스처 (glTF는 PNG·JPEG, asset/TextureCache.cpp)
+#define STBI_ONLY_JPEG // model textures (glTF uses PNG/JPEG, asset/TextureCache.cpp)
 #if MEALKIT_DEBUG_UI
-#define STBI_ONLY_HDR // 하늘 HDRI 굽기 (asset/Environment.cpp, 개발 빌드만. 출시 빌드는 구운 캐시만 읽는다)
+#define STBI_ONLY_HDR // sky HDRI baking (asset/Environment.cpp, dev builds only. Shipping builds only read the baked cache)
 #endif
 #define STBI_NO_STDIO
 #include "stb_image.h"

@@ -20,7 +20,7 @@ namespace mealkit::ui {
 namespace {
 
 constexpr f64 kReloadSeconds = 0.25;
-constexpr f32 kScrollStep = 60.0f;   // 휠 한 칸 (논리 단위)
+constexpr f32 kScrollStep = 60.0f;   // one wheel notch (logical units)
 constexpr f32 kDegToRad = 0.01745329252f;
 
 struct Rect {
@@ -28,7 +28,7 @@ struct Rect {
     bool contains(f32 px, f32 py) const { return px >= x && py >= y && px < x + w && py < y + h; }
 };
 
-// ---------------------------------------------------------------- 색
+// ---------------------------------------------------------------- Colors
 
 u32 lerpColor(u32 a, u32 b, f32 t) {
     if (t <= 0.0f) return a;
@@ -46,22 +46,22 @@ u32 withAlpha(u32 c, f32 opacity) {
     return (c & 0x00FFFFFFu) | (static_cast<u32>(std::lround(a)) << 24);
 }
 
-// ---------------------------------------------------------------- 화면
+// ---------------------------------------------------------------- Screens
 
 struct RNode {
     u32 src = 0;
     i32 parent = -1;
     u32 end = 0;
     i32 listIndex = -1;
-    reflect::View item; // 목록 항목 (바인딩이 먼저 여기서 찾는다)
-    Rect rect;          // 논리 단위 (보드 기준)
+    reflect::View item; // list item (bindings look here first)
+    Rect rect;          // logical units (relative to the board)
     bool visible = true;
     bool disabled = false, checked = false;
     f32 mix[static_cast<int>(State::Count)] = {};
-    std::string text; // 바인딩을 푼 글자
-    bool placeholder = false; // 글자 입력이 비어 자리 표시 글자를 보인다
+    std::string text; // text with bindings resolved
+    bool placeholder = false; // the text input is empty and shows placeholder text
     Shaped shaped;
-    f32 shapedWidth = -2.0f; // 이 너비로 줄을 나눴다
+    f32 shapedWidth = -2.0f; // lines were broken at this width
     std::string shapedText;
     f32 scroll = 0.0f, contentExtent = 0.0f;
 };
@@ -70,19 +70,19 @@ struct Screen {
     ScreenId id = kNoScreen;
     i32 layer = 0;
     bool worldTemplate = false;
-    bool fresh = true; // 연 뒤 아직 update를 거치지 않았다: ui.* 액션은 연 프레임의 것이라 받지 않는다 (Esc로 열고 같은 Esc로 닫히지 않게)
+    bool fresh = true; // hasn't gone through update since opening: ui.* actions are from the opening frame, so they aren't taken (so opening with Esc doesn't close with the same Esc)
     std::string path;
     unsigned long long fileTime = 0;
     Document doc;
-    std::vector<std::array<Visual, static_cast<size_t>(State::Count)>> stateVisuals; // 상태가 있는 노드: 상태마다 그리기 값
-    std::vector<i32> stateIndex; // doc 노드 → stateVisuals 번호 (-1 없음)
+    std::vector<std::array<Visual, static_cast<size_t>(State::Count)>> stateVisuals; // nodes with states: drawing values per state
+    std::vector<i32> stateIndex; // doc node → stateVisuals index (-1 none)
     reflect::View vm;
     std::vector<RNode> nodes;
-    std::vector<u32> listCounts; // 목록 개수가 바뀌면 다시 펼친다
+    std::vector<u32> listCounts; // re-expanded when list counts change
     bool rebuild = true;
     std::vector<std::string> bindingErrors;
     i32 focus = -1, hover = -1, pressed = -1;
-    i32 editing = -1; // 글자를 치고 있는 글자 입력 노드
+    i32 editing = -1; // text input node being typed into
     f32 rootW = 1920, rootH = 1080, scale = 1, originX = 0, originY = 0;
 };
 
@@ -165,7 +165,7 @@ std::string thousands(i64 v) {
     return v < 0 ? "-" + out : out;
 }
 
-// 서식: 없음, n(천 단위), n1·f1(소수 자리), time(분:초), pct(0..1 → %)
+// Formats: none, n (thousands), n1/f1 (decimal places), time (min:sec), pct (0..1 → %)
 std::string formatValue(const reflect::ValueInfo& v, const void* data, const std::string& spec) {
     if (v.kind == reflect::Kind::String) return *static_cast<const std::string*>(data);
     if (!v.enumNames.empty()) {
@@ -229,7 +229,7 @@ void lerpVisual(Visual& a, const Visual& b, f32 t) {
     if (t >= 0.5f) a.shadows = b.shadows;
 }
 
-// 테마 토큰을 실제 색으로 (상태 섞기 전에)
+// Theme tokens to real colors (before state blending)
 void resolveVisual(Visual& v, const Theme& theme) {
     v.fill.c0.rgba = theme.color(v.fill.c0, v.fill.c0.rgba);
     v.fill.c1.rgba = theme.color(v.fill.c1, v.fill.c1.rgba);
@@ -278,12 +278,12 @@ struct System::Impl {
     }
 
     void loadScreen(Screen& s) {
-        ensureTheme(); // 숫자 토큰($radius)은 읽을 때 푼다
+        ensureTheme(); // number tokens ($radius) are resolved when reading
         loadDocument(s.path, s.doc, &theme);
         const std::string file = findAssetFile(s.path);
         s.fileTime = file.empty() ? 0 : fileWriteTime(file);
         for (const std::string& e : s.doc.errors) MEALKIT_WARN("UI: %s", e.c_str());
-        // 상태별 그리기 값을 미리 만든다
+        // Build per-state drawing values in advance
         s.stateVisuals.clear();
         s.stateIndex.assign(s.doc.nodes.size(), -1);
         for (size_t i = 0; i < s.doc.nodes.size(); ++i) {
@@ -306,7 +306,7 @@ struct System::Impl {
         s.focus = s.hover = s.pressed = -1;
     }
 
-    // ---------------------------------------------------------------- 바인딩
+    // ---------------------------------------------------------------- Bindings
 
     bool resolve(Screen& s, const RNode& n, const std::string& path, const reflect::ValueInfo*& v, void*& data) {
         if (n.item.type && reflect::resolvePath(*n.item.type, const_cast<void*>(n.item.data), path, v, data)) return true;
@@ -334,7 +334,7 @@ struct System::Impl {
         return truthy(*v, data) != negate;
     }
 
-    std::string optionLabel(Screen& s, i32 index) { // 가장 가까운 선택 상자의 지금 선택
+    std::string optionLabel(Screen& s, i32 index) { // current selection of the nearest select box
         for (i32 a = index; a >= 0; a = s.nodes[static_cast<size_t>(a)].parent) {
             const Node& d = s.doc.nodes[s.nodes[static_cast<size_t>(a)].src];
             if (d.widget != WidgetKind::Select || d.options.empty()) continue;
@@ -352,7 +352,7 @@ struct System::Impl {
     std::string resolveText(Screen& s, i32 index) {
         RNode& n = s.nodes[static_cast<size_t>(index)];
         const Node& d = s.doc.nodes[n.src];
-        if (d.widget == WidgetKind::TextInput) { // 필드 값 그대로 (비어 있으면 자리 표시 글자)
+        if (d.widget == WidgetKind::TextInput) { // the field value as is (placeholder text if empty)
             n.placeholder = false;
             const reflect::ValueInfo* v = nullptr;
             void* data = nullptr;
@@ -397,7 +397,7 @@ struct System::Impl {
         return out;
     }
 
-    // ---------------------------------------------------------------- 펼치기 (목록 항목)
+    // ---------------------------------------------------------------- Expansion (list items)
 
     u32 listCount(Screen& s, const RNode& n, const Node& d, const reflect::ValueInfo** element, u8** base, u32* capacity) {
         const reflect::ValueInfo* v = nullptr;
@@ -452,7 +452,7 @@ struct System::Impl {
         s.listCounts.clear();
         if (!s.doc.nodes.empty()) buildSubtree(s, 0, -1, {}, -1);
         s.focus = s.hover = s.pressed = -1;
-        for (size_t i = 0; i < s.nodes.size(); ++i) { // 포커스·스크롤은 같은 노드로 이어 간다
+        for (size_t i = 0; i < s.nodes.size(); ++i) { // focus/scroll carry over to the same node
             if (s.nodes[i].src == keepFocus && s.nodes[i].listIndex == keepList) s.focus = static_cast<i32>(i);
             for (const RNode& o : old)
                 if (o.src == s.nodes[i].src && o.listIndex == s.nodes[i].listIndex) {
@@ -480,7 +480,7 @@ struct System::Impl {
         return false;
     }
 
-    // ---------------------------------------------------------------- 배치
+    // ---------------------------------------------------------------- Layout
 
     void shapeText(Screen& s, i32 index, f32 wrapWidth, f32 maxHeight) {
         RNode& n = s.nodes[static_cast<size_t>(index)];
@@ -492,7 +492,7 @@ struct System::Impl {
         n.shapedText = n.text;
     }
 
-    // 내용에 맞춘 크기 (hug). availW: 글자 줄바꿈에 쓸 너비 (<0 없음)
+    // Size fitted to content (hug). availW: width used for text wrapping (<0 none)
     void intrinsic(Screen& s, i32 index, f32 availW, f32& outW, f32& outH) {
         RNode& n = s.nodes[static_cast<size_t>(index)];
         const Node& d = s.doc.nodes[n.src];
@@ -544,7 +544,7 @@ struct System::Impl {
         outH = d.hMode == SizeMode::Fixed ? d.h : h;
     }
 
-    // 자식이 원하는 크기 (fill은 최소 크기로 센다)
+    // Size a child wants (fill counts as minimum size)
     void childSize(Screen& s, i32 index, f32 availW, f32& w, f32& h) {
         const Node& d = s.doc.nodes[s.nodes[static_cast<size_t>(index)].src];
         f32 iw = d.w, ih = d.h;
@@ -558,7 +558,7 @@ struct System::Impl {
     void place(Screen& s, i32 index, Rect r) {
         RNode& n = s.nodes[static_cast<size_t>(index)];
         const Node& d = s.doc.nodes[n.src];
-        if (!d.widthRatioField.empty()) { // 너비 비율 바인딩 (체력 막대)
+        if (!d.widthRatioField.empty()) { // width ratio binding (health bars)
             const reflect::ValueInfo* v = nullptr;
             void* data = nullptr;
             if (resolve(s, n, d.widthRatioField, v, data)) r.w *= static_cast<f32>(std::clamp(numberOf(*v, data), 0.0, 1.0));
@@ -620,7 +620,7 @@ struct System::Impl {
         }
         if (d.layout == LayoutKind::Flex && !flow.empty()) flex(s, index, flow, sx, sy);
         if (d.layout == LayoutKind::Grid && !flow.empty()) grid(s, index, flow, sx, sy);
-        // 스크롤 영역: 내용 끝
+        // Scroll area: end of content
         if (scroll) {
             f32 extent = 0.0f;
             for (i32 c = index + 1; c < static_cast<i32>(n.end); c = static_cast<i32>(s.nodes[static_cast<size_t>(c)].end)) {
@@ -645,8 +645,8 @@ struct System::Impl {
 
         struct Item {
             i32 node;
-            f32 main, cross;        // 크기 (여백 제외)
-            f32 m0, m1, c0, c1;     // 여백: 앞·뒤 (주축), 앞·뒤 (교차축)
+            f32 main, cross;        // size (excluding margins)
+            f32 m0, m1, c0, c1;     // margins: start/end (main axis), start/end (cross axis)
             bool grow, stretch;
             f32 minMain, maxMain;
         };
@@ -673,7 +673,7 @@ struct System::Impl {
         }
         if (d.reverse) std::reverse(items.begin(), items.end());
 
-        // 줄 나누기 (wrap)
+        // Line wrapping (wrap)
         struct Line {
             size_t begin, end;
             f32 cross = 0;
@@ -693,7 +693,7 @@ struct System::Impl {
             }
             lines.push_back({begin, items.size()});
         }
-        // 채우기 자식에 남는 자리 나누기, 줄 높이
+        // Distribute remaining space to fill children, line heights
         for (Line& line : lines) {
             f32 used = 0.0f;
             u32 grow = 0;
@@ -709,8 +709,8 @@ struct System::Impl {
                         items[i].main = std::clamp(items[i].main + free / static_cast<f32>(grow), items[i].minMain, items[i].maxMain);
             for (size_t i = line.begin; i < line.end; ++i) line.cross = std::max(line.cross, items[i].cross + items[i].c0 + items[i].c1);
         }
-        if (lines.size() == 1 && !d.wrap) lines[0].cross = crossSize; // 한 줄이면 교차축 전체
-        // 여러 줄 배분
+        if (lines.size() == 1 && !d.wrap) lines[0].cross = crossSize; // a single line takes the whole cross axis
+        // Multi-line distribution
         f32 linesCross = 0.0f;
         for (const Line& l : lines) linesCross += l.cross;
         linesCross += crossGap * static_cast<f32>(lines.size() - 1);
@@ -784,10 +784,10 @@ struct System::Impl {
 
     struct GridItem {
         i32 node;
-        u32 row, col, rowSpan, colSpan; // 0부터
+        u32 row, col, rowSpan, colSpan; // from 0
     };
 
-    // 자식마다 칸을 정한다: cell이 있으면 그 칸, 없으면 빈 칸을 행(또는 열) 순서로. 트랙 밖이면 마지막 트랙으로 자른다
+    // Decides a cell per child: the given cell if any, otherwise empty cells in row (or column) order. Outside the tracks, clamped to the last track
     std::vector<GridItem> gridItems(Screen& s, const Node& d, const std::vector<i32>& flow) {
         const u32 rows = static_cast<u32>(std::max<size_t>(1, d.rows.size())), cols = static_cast<u32>(std::max<size_t>(1, d.columns.size()));
         std::vector<u8> used(static_cast<size_t>(rows) * cols, 0);
@@ -796,7 +796,7 @@ struct System::Impl {
                 for (u32 c = it.col; c < it.col + it.colSpan; ++c) used[static_cast<size_t>(r) * cols + c] = 1;
         };
         std::vector<GridItem> items;
-        for (i32 c : flow) { // 정한 칸 먼저
+        for (i32 c : flow) { // explicitly placed cells first
             const Node& cd = s.doc.nodes[s.nodes[static_cast<size_t>(c)].src];
             GridItem it{c, 0, 0, 1, 1};
             if (cd.cellRow > 0 && cd.cellColumn > 0) {
@@ -823,14 +823,14 @@ struct System::Impl {
                     break;
                 }
             }
-            if (it.row == ~0u) it.row = rows - 1, it.col = cols - 1; // 칸이 모자라면 마지막 칸에 겹친다
+            if (it.row == ~0u) it.row = rows - 1, it.col = cols - 1; // if out of cells, overlaps the last cell
             mark(it);
         }
         return items;
     }
 
-    // 트랙 크기: 고정·%는 그대로, auto는 한 칸짜리 자식의 가장 큰 크기, fr은 남는 자리를 비율로(최소는 내용).
-    // inner < 0이면 내용에 맞춘 크기(%와 fr은 auto처럼). fr이 없고 stretch면 남는 자리를 auto 트랙이 나눈다
+    // Track sizes: fixed/% as is, auto is the largest size of single-cell children, fr shares the remaining space by ratio (minimum is content).
+    // If inner < 0, sized to content (% and fr behave like auto). Without fr and with stretch, auto tracks share the remaining space
     static void gridTracks(const std::vector<Track>& tracks, f32 inner, f32 gap, const std::vector<f32>& content, bool stretch,
                            std::vector<f32>& out) {
         const size_t n = std::max<size_t>(1, tracks.size());
@@ -850,7 +850,7 @@ struct System::Impl {
         }
         if (inner < 0.0f) return;
         if (fr > 0.0f) {
-            // 내용보다 작아지는 fr 트랙은 내용 크기로 고정하고 나머지로 다시 나눈다
+            // fr tracks that would shrink below content are fixed at content size and the rest is redistributed
             std::vector<u8> fixed(n, 0);
             for (int pass = 0; pass < 4; ++pass) {
                 f32 left = inner - used, frLeft = 0.0f;
@@ -876,7 +876,7 @@ struct System::Impl {
         }
     }
 
-    // 열을 먼저 정하고(글자 줄바꿈 없이), 그 너비로 행 높이를 정한다. innerW·innerH < 0이면 내용에 맞춤
+    // Columns are decided first (without text wrapping), then row heights with those widths. If innerW/innerH < 0, sized to content
     void gridSolve(Screen& s, const Node& d, const std::vector<GridItem>& items, f32 innerW, f32 innerH,
                    std::vector<f32>& colSizes, std::vector<f32>& rowSizes) {
         std::vector<f32> colContent(std::max<size_t>(1, d.columns.size()), 0.0f), rowContent(std::max<size_t>(1, d.rows.size()), 0.0f);
@@ -906,7 +906,7 @@ struct System::Impl {
         return sum;
     }
 
-    // 남는 자리 배분 (justify: 열, alignContent: 행) → 트랙 시작 위치
+    // Distribution of remaining space (justify: columns, alignContent: rows) → track start positions
     static void trackStarts(const std::vector<f32>& sizes, f32 gap, f32 inner, Justify j, Align a, std::vector<f32>& starts) {
         const size_t n = sizes.size();
         const f32 free = std::max(0.0f, inner - trackSum(sizes, gap));
@@ -935,7 +935,7 @@ struct System::Impl {
         const std::vector<GridItem> items = gridItems(s, d, flow);
         std::vector<f32> cols, rows, colStart, rowStart;
         gridSolve(s, d, items, innerW, innerH, cols, rows);
-        // 열 배분은 justify, 행 배분은 alignContent (Align이 start·center·end면 그것, 아니면 space-*)
+        // Column distribution uses justify, row distribution alignContent (if Align is start/center/end, that; otherwise space-*)
         trackStarts(cols, d.columnGap, innerW, d.justify, Align::Start, colStart);
         trackStarts(rows, d.rowGap, innerH, d.alignContentJustify, d.alignContent, rowStart);
         for (const GridItem& it : items) {
@@ -958,7 +958,7 @@ struct System::Impl {
 
     void layout(Screen& s, f32 rootW, f32 rootH) {
         if (s.nodes.empty()) return;
-        // 글자 바인딩을 먼저 푼다 (바뀐 글자만 다시 나눈다)
+        // Resolve text bindings first (only changed text is re-broken)
         for (size_t i = 0; i < s.nodes.size(); ++i) {
             RNode& n = s.nodes[i];
             const Node& d = s.doc.nodes[n.src];
@@ -975,12 +975,12 @@ struct System::Impl {
         RNode& root = s.nodes[0];
         root.visible = !s.doc.nodes[0].hidden;
         place(s, 0, {0.0f, 0.0f, rootW, rootH});
-        // 부모가 숨으면 자손도 숨는다
+        // If the parent is hidden, descendants are hidden too
         for (size_t i = 1; i < s.nodes.size(); ++i)
             if (!s.nodes[static_cast<size_t>(s.nodes[i].parent)].visible) s.nodes[i].visible = false;
     }
 
-    // ---------------------------------------------------------------- 그리기
+    // ---------------------------------------------------------------- Drawing
 
     void emitText(Screen& s, const RNode& n, const Node& d, const Visual& v, f32 opacity, const f32 clip[4], bool caret) {
         const Shaped& sh = n.shaped;
@@ -1047,7 +1047,7 @@ struct System::Impl {
             }
             y += line.height;
         }
-        if (caret && !n.placeholder) { // 글자 입력 중: 끝에 깜박이는 세로 막대
+        if (caret && !n.placeholder) { // typing in a text input: a blinking vertical bar at the end
             render::UiQuad q;
             q.rect[0] = s.originX + caretX * k;
             q.rect[1] = s.originY + (caretY + caretH * 0.1f) * k;
@@ -1068,7 +1068,7 @@ struct System::Impl {
         if (si >= 0)
             for (int st = 1; st < static_cast<int>(State::Count); ++st)
                 lerpVisual(v, s.stateVisuals[static_cast<size_t>(si)][static_cast<size_t>(st)], n.mix[st]);
-        if (!d.colorField.empty()) { // 색 바인딩 (Color 또는 u32 rgba)
+        if (!d.colorField.empty()) { // color binding (Color or u32 rgba)
             const reflect::ValueInfo* cv = nullptr;
             void* data = nullptr;
             if (resolve(s, n, d.colorField, cv, data) && cv->size == 4) {
@@ -1144,7 +1144,7 @@ struct System::Impl {
                 };
                 if (!sliced) {
                     piece(r.x, r.y, r.x + r.w, r.y + r.h, img.u0, img.v0, img.u1, img.v1);
-                } else { // 9-slice: 여백은 원본 픽셀 = 논리 단위
+                } else { // 9-slice: margins are source pixels = logical units
                     const f32 du = (img.u1 - img.u0) / static_cast<f32>(img.width), dv = (img.v1 - img.v0) / static_cast<f32>(img.height);
                     const f32 xs[4] = {r.x, r.x + d.slice[0] * k, r.x + r.w - d.slice[2] * k, r.x + r.w};
                     const f32 ys[4] = {r.y, r.y + d.slice[1] * k, r.y + r.h - d.slice[3] * k, r.y + r.h};
@@ -1156,7 +1156,7 @@ struct System::Impl {
             }
         }
         if (d.kind == NodeKind::Text) emitText(s, n, d, v, opacity, clip, index == s.editing && std::fmod(time, 1.0) < 0.6);
-        // 포커스 표시 (게임패드·키보드로 옮길 때)
+        // Focus indicator (when moving with gamepad/keyboard)
         if (index == s.focus && (focusVisible || focusAlways) && d.widget != WidgetKind::None && d.widget != WidgetKind::List) {
             render::UiQuad q;
             base(q);
@@ -1171,7 +1171,7 @@ struct System::Impl {
             q.flags = render::kUiShape;
             quads.push_back(q);
         }
-        // 자식
+        // Children
         f32 childClip[4] = {clip[0], clip[1], clip[2], clip[3]};
         if (d.clip) {
             childClip[0] = std::max(clip[0], r.x);
@@ -1193,7 +1193,7 @@ struct System::Impl {
         layout(s, s.rootW, s.rootH);
     }
 
-    // ---------------------------------------------------------------- 입력
+    // ---------------------------------------------------------------- Input
 
     bool focusable(const Screen& s, i32 i) const {
         const RNode& n = s.nodes[static_cast<size_t>(i)];
@@ -1206,7 +1206,7 @@ struct System::Impl {
         for (i32 i = static_cast<i32>(s.nodes.size()) - 1; i >= 0; --i) {
             const RNode& n = s.nodes[static_cast<size_t>(i)];
             if (!n.visible || !n.rect.contains(x, y)) continue;
-            bool clipped = false; // 잘린 부모 밖이면 무시
+            bool clipped = false; // ignored if outside a clipping parent
             for (i32 a = n.parent; a >= 0; a = s.nodes[static_cast<size_t>(a)].parent) {
                 const RNode& an = s.nodes[static_cast<size_t>(a)];
                 if (s.doc.nodes[an.src].clip && !an.rect.contains(x, y)) clipped = true;
@@ -1218,7 +1218,7 @@ struct System::Impl {
                 return i;
             }
             if (i > 0 && d.kind == NodeKind::Frame && d.visual.fill.kind != PaintKind::None && (d.visual.fill.c0.rgba >> 24) > 0)
-                blocks = true; // 채워진 판 위 (뒤의 게임은 클릭을 받지 않는다)
+                blocks = true; // over a filled panel (the game behind doesn't receive the click)
         }
         return -1;
     }
@@ -1255,7 +1255,7 @@ struct System::Impl {
                 emit(s, index, d.action.empty() ? "changed" : d.action, d.field);
             }
             break;
-        case WidgetKind::TextInput: s.editing = index; break; // 글자 치기 시작 (Enter: 액션, Esc: 그만)
+        case WidgetKind::TextInput: s.editing = index; break; // start typing (Enter: action, Esc: stop)
         case WidgetKind::Slider:
             if (resolve(s, n, d.field, v, data)) {
                 const f64 stepSize = d.sliderStep > 0 ? d.sliderStep : (d.sliderMax - d.sliderMin) / 20.0;
@@ -1266,7 +1266,7 @@ struct System::Impl {
         }
     }
 
-    bool setSlider(Screen& s, i32 index, f64 value) { // 값이 바뀌어 액션을 냈으면 true
+    bool setSlider(Screen& s, i32 index, f64 value) { // true if the value changed and an action was fired
         RNode& n = s.nodes[static_cast<size_t>(index)];
         const Node& d = s.doc.nodes[n.src];
         const reflect::ValueInfo* v = nullptr;
@@ -1286,7 +1286,7 @@ struct System::Impl {
         return -1;
     }
 
-    // 방향으로 가장 가까운 위젯 (0 위, 1 아래, 2 왼쪽, 3 오른쪽)
+    // Nearest widget in a direction (0 up, 1 down, 2 left, 3 right)
     i32 neighbor(Screen& s, i32 from, int dir) {
         const Node& d = s.doc.nodes[s.nodes[static_cast<size_t>(from)].src];
         if (!d.focusNext[dir].empty()) {
@@ -1342,7 +1342,7 @@ struct System::Impl {
             const i32 h = mouseTaken ? -1 : hit(s, lx, ly, blocks);
             if (blocks) mouseTaken = true;
             s.hover = h;
-            if (clicked && s.editing >= 0 && h != s.editing) s.editing = -1; // 다른 곳을 누르면 글자 치기를 그만둔다
+            if (clicked && s.editing >= 0 && h != s.editing) s.editing = -1; // clicking elsewhere stops typing
             if (clicked && h >= 0) {
                 s.pressed = h;
                 if (focusable(s, h)) s.focus = h;
@@ -1355,13 +1355,13 @@ struct System::Impl {
                     if (setSlider(s, s.pressed, pd.sliderMin + t * (pd.sliderMax - pd.sliderMin))) actions.back().dragging = true;
                 }
                 if (!down) {
-                    if (pd.widget == WidgetKind::Slider) emit(s, s.pressed, pd.action.empty() ? "changed" : pd.action, pd.field); // 놓았다
+                    if (pd.widget == WidgetKind::Slider) emit(s, s.pressed, pd.action.empty() ? "changed" : pd.action, pd.field); // released
                     else if (s.pressed == h) activate(s, h);
                     s.pressed = -1;
                 }
             }
             if (input && input->wheelDelta() != 0.0f && !mouseTaken) {
-                // 스크롤: 마우스 아래의 가장 안쪽 스크롤 영역
+                // Scrolling: the innermost scroll area under the mouse
                 for (i32 i = static_cast<i32>(s.nodes.size()) - 1; i >= 0; --i) {
                     RNode& n = s.nodes[static_cast<size_t>(i)];
                     const Node& d = s.doc.nodes[n.src];
@@ -1376,7 +1376,7 @@ struct System::Impl {
         }
         wantsMouse = mouseTaken;
 
-        // 글자 입력 중이면 키보드는 그 칸만 받는다 (ui.* 이동·확인·뒤로도 쓰지 않는다)
+        // While typing in a text input, only that field receives the keyboard (ui.* move/confirm/back aren't used either)
         Screen* typing = nullptr;
         for (Screen* sp : order)
             if (sp->editing >= 0) {
@@ -1387,12 +1387,12 @@ struct System::Impl {
             if (in.keyboardAllowed && in.input) editText(*typing, *in.input);
             wantsKeyboard = true;
         }
-        // 키보드·게임패드: 포커스할 위젯이 있는 가장 위 화면
+        // Keyboard/gamepad: the topmost screen with a focusable widget
         else if (in.keyboardAllowed && in.actions) {
             const input::Actions& a = *in.actions;
             for (Screen* sp : order) {
                 Screen& s = *sp;
-                if (s.fresh) break; // 맨 위가 방금 연 화면이면 이번에는 아래 화면에도 넘기지 않는다
+                if (s.fresh) break; // if the top is a just-opened screen, don't pass to screens below this time either
                 bool any = false;
                 for (size_t i = 0; i < s.nodes.size() && !any && s.doc.navigation; ++i) any = focusable(s, static_cast<i32>(i));
                 if (a.pressed("ui.back") && !s.doc.backAction.empty()) {
@@ -1431,7 +1431,7 @@ struct System::Impl {
         }
         for (Screen& s : screens) s.fresh = false;
 
-        // 상태 섞기 (마우스 올림·눌림·포커스·비활성·켜짐)
+        // State blending (hover/pressed/focus/disabled/on)
         for (Screen& s : screens)
             for (size_t i = 0; i < s.nodes.size(); ++i) {
                 RNode& n = s.nodes[i];
@@ -1457,14 +1457,14 @@ struct System::Impl {
             return;
         }
         std::string& value = *static_cast<std::string*>(data);
-        for (u32 i = 0; i < input.backspaces() && !value.empty(); ++i) { // 마지막 글자 (UTF-8 이어지는 바이트까지)
+        for (u32 i = 0; i < input.backspaces() && !value.empty(); ++i) { // the last character (including UTF-8 continuation bytes)
             size_t end = value.size() - 1;
             while (end > 0 && (static_cast<u8>(value[end]) & 0xC0) == 0x80) --end;
             value.resize(end);
         }
         u32 count = static_cast<u32>(decodeUtf8(value).size());
         const std::string& text = input.text();
-        for (size_t at = 0; at < text.size();) { // 최대 글자 수까지 UTF-8 그대로 붙인다
+        for (size_t at = 0; at < text.size();) { // appends UTF-8 as is up to the max character count
             size_t len = 1;
             while (at + len < text.size() && (static_cast<u8>(text[at + len]) & 0xC0) == 0x80) ++len;
             if (count < d.maxLength) {
@@ -1512,7 +1512,7 @@ void System::init(render::Renderer* renderer, const loc::Strings* strings) {
     m->atlas.setRenderer(renderer);
     m->themeLoaded = false;
     m->ensureTheme();
-    for (Screen& s : m->screens) m->loadScreen(s); // init 전에 연 화면 (아틀라스·테마가 바뀌었다)
+    for (Screen& s : m->screens) m->loadScreen(s); // screens opened before init (atlases/theme changed)
 }
 
 ScreenId System::openWorld(const std::string& uiPath) {
@@ -1579,7 +1579,7 @@ void System::render(render::Renderer& renderer) {
     for (Screen& s : m->screens) order.push_back(&s);
     std::stable_sort(order.begin(), order.end(), [](const Screen* a, const Screen* b) { return a->layer < b->layer; });
     const f32 noClip[4] = {-1e9f, -1e9f, 1e9f, 1e9f};
-    // 월드 위 UI 먼저 (화면 UI 아래)
+    // World-space UI first (below screen UI)
     for (const WorldDraw& w : m->world) {
         Screen* s = m->find(w.screen);
         if (!s || s->doc.nodes.empty()) continue;
@@ -1587,7 +1587,7 @@ void System::render(render::Renderer& renderer) {
         const f32 cx = w.position.x * vp.m[0][0] + w.position.y * vp.m[1][0] + w.position.z * vp.m[2][0] + vp.m[3][0];
         const f32 cy = w.position.x * vp.m[0][1] + w.position.y * vp.m[1][1] + w.position.z * vp.m[2][1] + vp.m[3][1];
         const f32 cw = w.position.x * vp.m[0][3] + w.position.y * vp.m[1][3] + w.position.z * vp.m[2][3] + vp.m[3][3];
-        if (cw <= 1e-4f && !w.clamp) continue; // 카메라 뒤
+        if (cw <= 1e-4f && !w.clamp) continue; // behind the camera
         f32 nx = cx / std::max(cw, 1e-4f), ny = cy / std::max(cw, 1e-4f);
         if (cw <= 1e-4f) {
             nx = -nx;
@@ -1605,7 +1605,7 @@ void System::render(render::Renderer& renderer) {
             s->rebuild = true;
         }
         const f32 bw = std::max(1.0f, s->doc.boardW), bh = std::max(1.0f, s->doc.boardH);
-        const f32 k = std::min(m->viewW / 1920.0f, m->viewH / 1080.0f) * m->uiScale; // 기준 화면에 대한 배율
+        const f32 k = std::min(m->viewW / 1920.0f, m->viewH / 1080.0f) * m->uiScale; // scale relative to the reference screen
         if (s->rebuild || m->listsChanged(*s)) m->rebuild(*s);
         s->scale = k;
         s->rootW = bw;
