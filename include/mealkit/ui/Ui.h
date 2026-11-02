@@ -4,6 +4,8 @@
 #include "mealkit/core/Reflect.h"
 #include "mealkit/core/Types.h"
 
+#include "mkui/Ui.h"
+
 #include <string>
 #include <vector>
 
@@ -21,8 +23,10 @@ class Actions;
 }
 } // namespace mealkit
 
-// Game screen UI runtime (ROADMAP stage 1 "Game screen UI", docs/CODING_MODEL.md "How to build game UI" / "Connecting game code and UI").
-//   Screen = one assets/ui/*.ui (mealkit/ui/Document.h). The engine lays it out in retained mode and draws it in one 2D pass after 3D.
+// Game screen UI (ROADMAP stage 1 "Game screen UI", docs/CODING_MODEL.md "How to build game UI" / "Connecting game code and UI").
+// Glue over the mkui runtime (engine/libs/mkui, no engine headers): it reads assets through findAsset, string tables, Reflect view models,
+// input actions, and draws mkui's quads with render::Renderer.
+//   Screen = one assets/ui/*.ui (mkui/Document.h). The engine lays it out in retained mode and draws it in one 2D pass after 3D.
 //   The connection to game code is only a one-way view model + actions:
 //     MEALKIT_VIEWMODEL(HudVm) { MEALKIT_FIELD(u32, score, 0, "Score"); };
 //     m_hud = ctx.ui.open("ui/hud.ui");  ctx.ui.bind(m_hud, m_hudVm);   // once
@@ -34,40 +38,16 @@ class Actions;
 //   Text input (textInput) writes keyboard-typed text (Input::text) into a string field and fires an action on Enter (the game doesn't receive the keyboard while typing).
 namespace mealkit::ui {
 
-using ScreenId = u32;
-inline constexpr ScreenId kNoScreen = 0;
-
-struct Action {
-    std::string name;   // button action in the .ui (input widgets: the given action or "changed")
-    ScreenId screen = kNoScreen;
-    std::string node;   // name of the node that fired it
-    std::string field;  // input widgets: the changed view model field
-    i32 listIndex = -1; // inside a list, which item it is
-    bool dragging = false; // dragging a slider with the mouse (fires once more with dragging=false on release)
-};
+using ScreenId = mkui::ScreenId;
+using mkui::kNoScreen;
+using Action = mkui::Action;
+using ScreenInfo = mkui::ScreenInfo; // used by the preview panel and checks
+using NodeBox = mkui::NodeBox;
 
 struct FrameInput {
     const Input* input = nullptr;          // mouse (no mouse if absent)
     const input::Actions* actions = nullptr; // ui.* actions (no keyboard/gamepad controls if absent)
     bool mouseAllowed = true, keyboardAllowed = true;
-};
-
-// Info used by the preview panel and checks
-struct ScreenInfo {
-    std::string path;
-    u32 nodes = 0;         // expanded node count (including list items, budget 500)
-    u32 visibleNodes = 0;
-    std::vector<std::string> errors; // file errors, binding errors (missing fields), missing fonts/images
-    bool exported = false;
-};
-
-struct NodeBox {
-    std::string name;
-    std::string id; // Penpot shape id (exported files only)
-    f32 x, y, w, h; // logical units (relative to the board's top left)
-    u32 depth;
-    bool visible;
-    bool text; // text node (layout comparison is looser by font differences)
 };
 
 class System {

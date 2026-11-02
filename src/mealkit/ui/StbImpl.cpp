@@ -1,7 +1,5 @@
-// stb_truetype (UI font SDF) and stb_image (UI image PNG) implementations. External code, so warnings are off (engine/CMakeLists.txt).
-#define STB_TRUETYPE_IMPLEMENTATION
-#include "stb_truetype.h"
-
+// stb_image implementation (UI image PNG, model textures, sky HDRI). External code, so warnings are off (engine/CMakeLists.txt).
+// stb_truetype (UI font SDF) is compiled in the mkui runtime (engine/libs/mkui).
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG // model textures (glTF uses PNG/JPEG, asset/TextureCache.cpp)
