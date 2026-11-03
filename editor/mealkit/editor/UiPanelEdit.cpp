@@ -119,7 +119,7 @@ void UiPanel::syncSource() {
         m_map = ui::mapDocumentNodes(m_source, doc);
         if (m_hasSelection && !ui::findNode(m_source, m_selection)) m_hasSelection = false;
     }
-    if (!ImGui::IsAnyItemActive() && m_live != m_committed) {
+    if (!ImGui::IsAnyItemActive() && m_drag == Drag::None && m_live != m_committed) { // a widget edit or mouse drag is one step
         m_undo.push_back(m_committed);
         m_redo.clear();
         m_committed = m_live;
@@ -180,31 +180,6 @@ bool UiPanel::deleteSelected() {
     return true;
 }
 
-bool UiPanel::click(f32 x, f32 y, bool cycle) {
-    if (!editing() || !m_screen) return false;
-    const ui::ScreenInfo info = m_ui.info(m_screen);
-    if (info.scale <= 0.0f) return false;
-    const f32 lx = (x - info.originX) / info.scale, ly = (y - info.originY) / info.scale;
-    // Boxes under the point, deepest first; Ctrl steps from the current selection to the next one beneath
-    std::vector<std::pair<u32, ui::SourcePath>> hits;
-    for (const ui::NodeBox& b : m_ui.boxes(m_screen)) {
-        if (!b.visible || lx < b.x || ly < b.y || lx >= b.x + b.w || ly >= b.y + b.h || b.node >= m_map.size()) continue;
-        const ui::SourcePath& path = m_map[b.node];
-        bool seen = false;
-        for (const auto& h : hits) seen = seen || h.second == path;
-        if (!seen) hits.push_back({b.depth, path});
-    }
-    if (hits.empty()) return false;
-    std::stable_sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-    size_t pick = 0;
-    if (cycle && m_hasSelection)
-        for (size_t i = 0; i < hits.size(); ++i)
-            if (hits[i].second == m_selection) pick = (i + 1) % hits.size();
-    m_selection = hits[pick].second;
-    m_hasSelection = true;
-    return true;
-}
-
 bool UiPanel::selectNode(const std::string& name) {
     m_editing = true;
     for (const ui::SourcePath& path : m_map)
@@ -245,7 +220,7 @@ void UiPanel::drawEditor() {
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", tr("Unsaved"));
     }
     if (!m_editing) return;
-    ImGui::TextDisabled("%s", tr("Click the preview to select (Ctrl+click: the box beneath). Ctrl+S saves."));
+    ImGui::TextDisabled("%s", tr("Click the preview to select (Ctrl+click: the box beneath), drag to move or reorder, handles resize (Ctrl: no snapping). Ctrl+S saves."));
 
     if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY)) {
         if (ui::SourceNode* board = ui::findNode(m_source, {})) drawTree(*board, {});
@@ -299,7 +274,7 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
 
     // Common properties with their own widgets (the lines below show every property as text)
     std::string value;
-    if (placedByLayout) ImGui::TextDisabled("%s", tr("Placed by the parent's layout (order in the tree)."));
+    if (placedByLayout) ImGui::TextDisabled("%s", tr("Placed by the parent's layout: drag it in the preview to change its order."));
     else if (node.kind != "board") {
         std::vector<f32> pos = ui::getProperty(node, "pos", value) ? numbers(value) : std::vector<f32>{0.0f, 0.0f};
         if (pos.size() == 2 && ImGui::DragFloat2(tr("Position"), pos.data(), 1.0f, 0.0f, 0.0f, "%.0f"))

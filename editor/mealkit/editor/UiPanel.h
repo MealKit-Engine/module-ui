@@ -39,10 +39,19 @@ public:
     bool dirty() const { return m_editable && m_live != m_saved; }
     bool save(); // writes the screen's file; false on failure (logged)
     bool deleteSelected();
-    // Click in the scene view (screen pixels): selects the topmost box there; cycle = Ctrl (the next box beneath). false if outside the preview
-    bool click(f32 x, f32 y, bool cycle);
+    // Mouse over the scene view every frame (screen pixels): press selects the topmost box (ctrl: the one beneath), dragging the
+    // selection moves it (free nodes, snapping unless ctrl) or reorders it (nodes a layout places), handles resize. overUi = an editor
+    // window has the mouse. true while the panel uses the mouse
+    bool pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool overUi);
+    void drawOverlay(); // selection, handles, padding, snap guides, insert line (ImGui background list, each frame)
     // Automated tests (--ui-select): edit mode on, node chosen by name
     bool selectNode(const std::string& name);
+    // Automated tests (--ui-drag): drags node by (dx, dy) logical units after the first layout, logs the node's pos/size lines
+    void queueTestDrag(const std::string& node, f32 dx, f32 dy) {
+        m_testDragNode = node;
+        m_testDrag[0] = dx;
+        m_testDrag[1] = dy;
+    }
 
 private:
     void openSelected();
@@ -54,6 +63,16 @@ private:
     void drawTree(ui::SourceNode& node, const ui::SourcePath& path);
     void drawProperties(ui::SourceNode& node, bool placedByLayout);
     void drawSavePrompt();
+    enum class Drag : u8 { None, Move, Resize, Reorder };
+    bool boxOf(const ui::SourcePath& path, ui::NodeBox& out) const; // first visible box of a node (last layout)
+    std::string layoutOf(const ui::SourcePath& path) const;          // parent's layout if it places this node, else empty
+    u32 handleAt(f32 x, f32 y) const;                                // resize handle of the selection under the mouse (edge bits)
+    void startDrag(Drag kind, f32 x, f32 y);
+    void dragMove(f32 dx, f32 dy, bool snap);
+    void dragResize(f32 dx, f32 dy);
+    void updateReorder(f32 lx, f32 ly);
+    void finishReorder();
+    bool dragForTest(const std::string& node, f32 dx, f32 dy);
 
     std::vector<std::string> m_files;
     int m_selected = -1;
@@ -84,6 +103,27 @@ private:
     std::string m_newProperty;
     int m_pendingScreen = -1; // screen to open once the save prompt is answered
     u64 m_fileTime = 0;
+
+    // Mouse on the preview
+    struct Guide {
+        bool vertical;
+        f32 at; // logical x (vertical) or y
+    };
+    struct InsertLine {
+        bool valid = false;
+        f32 x = 0, y = 0, w = 0, h = 0; // logical
+    };
+    Drag m_drag = Drag::None;
+    bool m_dragArmed = false, m_dragOk = false;
+    u32 m_dragHandle = 0, m_hoverHandle = 0;
+    f32 m_dragStart[2] = {}, m_startBox[4] = {}, m_startPos[2] = {}, m_startSize[2] = {};
+    std::vector<Guide> m_guides;
+    InsertLine m_insert;
+    u32 m_insertAt = 0;
+    std::vector<ui::NodeBox> m_boxes; // last layout's boxes
+    f32 m_originX = 0, m_originY = 0, m_scaleK = 1;
+    std::string m_testDragNode;
+    f32 m_testDrag[2] = {};
 };
 
 } // namespace mealkit::editor

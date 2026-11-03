@@ -1,5 +1,6 @@
 #include "mealkit/editor/UiPanel.h"
 
+#include "mealkit/core/Log.h"
 #include "mealkit/editor/FieldEditor.h"
 #include "mealkit/editor/Strings.h"
 #include "mealkit/platform/Paths.h"
@@ -97,6 +98,7 @@ void UiPanel::draw(bool* open) {
     if (ImGui::SmallButton(tr("Refresh"))) refresh();
     drawSavePrompt();
     if (m_screen) drawEditor();
+    drawOverlay();
 
     // Penpot plugin: paste this address into Penpot's plugin manager (Ctrl+Alt+P). Changes every time the editor starts
     ImGui::SeparatorText("Penpot");
@@ -198,23 +200,18 @@ void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneVi
     renderer.drawUi(&frame, 1);
     m_ui.update({}, view, dt);
     m_ui.render(renderer);
-    if (!editing() || !m_hasSelection) return;
-    // Selection outline (every box of the selected node: list rows repeat it)
-    const ui::ScreenInfo info = m_ui.info(m_screen);
-    std::vector<render::UiQuad> outlines;
-    for (const ui::NodeBox& b : m_ui.boxes(m_screen)) {
-        if (!b.visible || b.node >= m_map.size() || m_map[b.node] != m_selection) continue;
-        render::UiQuad q;
-        q.rect[0] = info.originX + b.x * info.scale - 1.0f;
-        q.rect[1] = info.originY + b.y * info.scale - 1.0f;
-        q.rect[2] = b.w * info.scale + 2.0f;
-        q.rect[3] = b.h * info.scale + 2.0f;
-        q.color0 = render::rgba(0, 0, 0, 0);
-        q.strokeWidth = 2.0f;
-        q.strokeColor = render::rgba(80, 170, 255, 255);
-        outlines.push_back(q);
+    if (!m_testDragNode.empty()) { // --ui-drag: after the first layout
+        const std::string node = m_testDragNode;
+        m_testDragNode.clear();
+        std::string pos = "-", size = "-";
+        if (dragForTest(node, m_testDrag[0], m_testDrag[1]))
+            if (const ui::SourceNode* n = ui::findNode(m_source, m_selection)) {
+                ui::getProperty(*n, "pos", pos);
+                ui::getProperty(*n, "size", size);
+            }
+        MEALKIT_INFO("UI drag test: %s pos %s size %s index %d", node.c_str(), pos.c_str(), size.c_str(),
+                     m_selection.empty() ? -1 : static_cast<int>(m_selection.back()));
     }
-    if (!outlines.empty()) renderer.drawUi(outlines.data(), static_cast<u32>(outlines.size()));
 }
 
 } // namespace mealkit::editor
