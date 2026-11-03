@@ -14,6 +14,7 @@ using mkui::Document;
 using mkui::kThemeFile;
 using mkui::Node;
 using mkui::Source;
+using mkui::SourceItem;
 using mkui::SourceNode;
 using mkui::SourcePath;
 using mkui::NodeKind;

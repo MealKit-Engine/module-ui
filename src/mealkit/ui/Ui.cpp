@@ -198,6 +198,7 @@ void System::layout(const render::Viewport& viewport) { m->ui.layout({viewport.x
 
 ScreenInfo System::info(ScreenId screen) const { return m->ui.info(screen); }
 std::vector<NodeBox> System::boxes(ScreenId screen) const { return m->ui.boxes(screen); }
+void System::setDraft(ScreenId screen, const std::string* text) { m->ui.setDraft(screen, text); }
 void System::setFocusVisible(bool always) { m->ui.setFocusVisible(always); }
 u32 System::quadCount() const { return m->ui.quadCount(); }
 bool System::press(ScreenId screen, const std::string& nodeName) { return m->ui.press(screen, nodeName); }

@@ -62,9 +62,13 @@ void UiPanel::select(const std::string& uiFile) {
 void UiPanel::openSelected() {
     if (m_screen) m_ui.close(m_screen);
     m_screen = ui::kNoScreen;
-    if (m_selected < 0 || m_selected >= static_cast<int>(m_files.size())) return;
-    m_screen = m_ui.open("ui/" + m_files[static_cast<size_t>(m_selected)]);
-    bindViewModel();
+    m_path.clear();
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_files.size())) {
+        m_path = "ui/" + m_files[static_cast<size_t>(m_selected)];
+        m_screen = m_ui.open(m_path);
+        bindViewModel();
+    }
+    loadSource();
 }
 
 void UiPanel::bindViewModel() {
@@ -80,13 +84,19 @@ void UiPanel::draw(bool* open) {
     if (m_files.empty()) ImGui::TextDisabled("%s", tr("No .ui files in assets/ui."));
     if (ImGui::BeginListBox("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(6.0f, static_cast<f32>(m_files.size()) + 0.5f)))) {
         for (size_t i = 0; i < m_files.size(); ++i)
-            if (ImGui::Selectable(m_files[i].c_str(), m_selected == static_cast<int>(i))) {
-                m_selected = static_cast<int>(i);
-                openSelected();
+            if (ImGui::Selectable(m_files[i].c_str(), m_selected == static_cast<int>(i)) && m_selected != static_cast<int>(i)) {
+                if (dirty()) {
+                    m_pendingScreen = static_cast<int>(i); // ask first (drawSavePrompt)
+                } else {
+                    m_selected = static_cast<int>(i);
+                    openSelected();
+                }
             }
         ImGui::EndListBox();
     }
     if (ImGui::SmallButton(tr("Refresh"))) refresh();
+    drawSavePrompt();
+    if (m_screen) drawEditor();
 
     // Penpot plugin: paste this address into Penpot's plugin manager (Ctrl+Alt+P). Changes every time the editor starts
     ImGui::SeparatorText("Penpot");
@@ -162,6 +172,9 @@ void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneVi
     if (m_refreshTimer > 1.0) {
         m_refreshTimer = 0.0;
         refresh();
+        // The file changed outside the editor (text editor, Penpot export) while nothing is unsaved here: read it again
+        if (!m_path.empty() && !dirty())
+            if (const std::string file = findAssetFile(m_path); !file.empty() && fileWriteTime(file) != m_fileTime) loadSource();
     }
     if (!m_screen) return;
     // Fit inside the scene view at the chosen resolution's aspect (at that exact pixel size if it fits)
@@ -185,6 +198,23 @@ void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneVi
     renderer.drawUi(&frame, 1);
     m_ui.update({}, view, dt);
     m_ui.render(renderer);
+    if (!editing() || !m_hasSelection) return;
+    // Selection outline (every box of the selected node: list rows repeat it)
+    const ui::ScreenInfo info = m_ui.info(m_screen);
+    std::vector<render::UiQuad> outlines;
+    for (const ui::NodeBox& b : m_ui.boxes(m_screen)) {
+        if (!b.visible || b.node >= m_map.size() || m_map[b.node] != m_selection) continue;
+        render::UiQuad q;
+        q.rect[0] = info.originX + b.x * info.scale - 1.0f;
+        q.rect[1] = info.originY + b.y * info.scale - 1.0f;
+        q.rect[2] = b.w * info.scale + 2.0f;
+        q.rect[3] = b.h * info.scale + 2.0f;
+        q.color0 = render::rgba(0, 0, 0, 0);
+        q.strokeWidth = 2.0f;
+        q.strokeColor = render::rgba(80, 170, 255, 255);
+        outlines.push_back(q);
+    }
+    if (!outlines.empty()) renderer.drawUi(outlines.data(), static_cast<u32>(outlines.size()));
 }
 
 } // namespace mealkit::editor

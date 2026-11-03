@@ -3,6 +3,7 @@
 #include "mealkit/core/Reflect.h"
 #include "mealkit/loc/Strings.h"
 #include "mealkit/render/Renderer.h"
+#include "mealkit/ui/Document.h"
 #include "mealkit/ui/Ui.h"
 
 #include <string>
@@ -11,6 +12,9 @@
 // Editor [UI] panel: preview of game screens (assets/ui/*.ui). Draws the chosen screen over the scene view in edit mode.
 // Change resolution (aspect), UI scale, language (to check text overflow), and put fake values into the game's view models (MEALKIT_VIEWMODEL).
 // Shows file errors, binding errors (missing fields), and node count (budget 500). Editing and saving a .ui rereads it immediately.
+// [Edit screen]: WYSIWYG editing (ROADMAP "Game UI editor in the editor"). Edits the file's source (mkui/Source.h), the preview shows the unsaved text
+// (ui::System::setDraft). Click the preview or the node tree to select (Ctrl+click: the box beneath), properties are its lines. Own undo history;
+// the editor routes Ctrl+Z/Y/S and Delete here while editing. Penpot exports open read-only.
 namespace mealkit::editor {
 
 class UiPanel {
@@ -26,9 +30,30 @@ public:
     // In edit mode, draws over the scene view if the panel is open (after 3D, before editor UI)
     void render(render::Renderer& renderer, const render::Viewport& sceneView, f64 dt);
 
+    // Editing (the editor asks these while the panel is open in edit mode)
+    bool editing() const { return m_editing && m_editable; }
+    bool canUndo() const { return !m_undo.empty(); }
+    bool canRedo() const { return !m_redo.empty(); }
+    void undo();
+    void redo();
+    bool dirty() const { return m_editable && m_live != m_saved; }
+    bool save(); // writes the screen's file; false on failure (logged)
+    bool deleteSelected();
+    // Click in the scene view (screen pixels): selects the topmost box there; cycle = Ctrl (the next box beneath). false if outside the preview
+    bool click(f32 x, f32 y, bool cycle);
+    // Automated tests (--ui-select): edit mode on, node chosen by name
+    bool selectNode(const std::string& name);
+
 private:
     void openSelected();
     void bindViewModel();
+    void loadSource();          // reads the screen's file into m_source (edit history cleared)
+    void syncSource();          // after edits: new text → preview draft, node map; commits history when no widget is active
+    void setText(const std::string& text); // undo/redo: replace the source with this text
+    void drawEditor();          // node tree + properties
+    void drawTree(ui::SourceNode& node, const ui::SourcePath& path);
+    void drawProperties(ui::SourceNode& node, bool placedByLayout);
+    void drawSavePrompt();
 
     std::vector<std::string> m_files;
     int m_selected = -1;
@@ -45,6 +70,20 @@ private:
     reflect::Instance m_vm;
     f64 m_refreshTimer = 0.0;
     std::string m_penpotUrl;
+
+    // Editing
+    bool m_editing = false, m_editable = false;
+    std::string m_path;           // asset path of the open screen ("ui/hud.ui")
+    bool m_crlf = false;          // file used CRLF line ends (kept on save)
+    ui::Source m_source;
+    std::string m_live, m_committed, m_saved; // current text / last history point / file contents
+    std::vector<std::string> m_undo, m_redo;
+    std::vector<ui::SourcePath> m_map; // Document node → source node (preview boxes → selection)
+    bool m_hasSelection = false;
+    ui::SourcePath m_selection;
+    std::string m_newProperty;
+    int m_pendingScreen = -1; // screen to open once the save prompt is answered
+    u64 m_fileTime = 0;
 };
 
 } // namespace mealkit::editor
