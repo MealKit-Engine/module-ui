@@ -23,6 +23,84 @@ constexpr const char* kProperties[] = {
     "select", "scroll", "list", "textInput", "placeholder", "maxLength", "focusUp", "focusDown", "focusLeft",
     "focusRight", "on", "transition", "set", "id"};
 
+// View model fields by path ("a.b": struct fields), as the runtime names them
+const reflect::FieldInfo* fieldAt(const reflect::TypeInfo* type, const std::string& path) {
+    size_t from = 0;
+    while (type) {
+        const size_t dot = path.find('.', from);
+        const reflect::FieldInfo* f = type->field(path.substr(from, dot == std::string::npos ? dot : dot - from).c_str());
+        if (!f || dot == std::string::npos) return f;
+        type = f->value->kind == reflect::Kind::Struct ? f->value->type : nullptr;
+        from = dot + 1;
+    }
+    return nullptr;
+}
+
+bool isList(const reflect::FieldInfo& f) {
+    return f.value->kind == reflect::Kind::Array && f.value->element && f.value->element->kind == reflect::Kind::Struct && f.value->element->type;
+}
+
+using KindTest = bool (*)(const reflect::FieldInfo&);
+bool anyValue(const reflect::FieldInfo& f) { return f.value->kind != reflect::Kind::Struct && f.value->kind != reflect::Kind::Array; }
+bool floatValue(const reflect::FieldInfo& f) { return f.value->kind == reflect::Kind::Float; }
+bool colorValue(const reflect::FieldInfo& f) { return f.value->kind == reflect::Kind::Color; }
+
+void fieldNames(const reflect::TypeInfo& type, const std::string& prefix, KindTest test, std::vector<std::string>& out, u32 depth = 0) {
+    for (const reflect::FieldInfo& f : type.fields) {
+        if (test(f)) out.push_back(prefix + f.name);
+        if (depth < 3 && f.value->kind == reflect::Kind::Struct && f.value->type) fieldNames(*f.value->type, prefix + f.name + ".", test, out, depth + 1);
+    }
+}
+
+// Property → what its field must be. `visible` and `disabled` take a leading ! to negate
+struct BindingKey {
+    const char* key;
+    const char* (*label)(); // translated when drawn (the language can change)
+    KindTest test;
+    bool negatable;
+};
+const BindingKey kBindings[] = {
+    {"visible", [] { return tr("Visible when"); }, anyValue, true},
+    {"disabled", [] { return tr("Disabled when"); }, anyValue, true},
+    {"widthRatio", [] { return tr("Width from"); }, floatValue, false},
+    {"colorField", [] { return tr("Color from"); }, colorValue, false},
+    {"list", [] { return tr("Repeat for"); }, isList, false},
+};
+
+// {field} and {field:format} names in text
+std::vector<std::string> textFields(const std::string& text) {
+    std::vector<std::string> out;
+    for (size_t open = text.find('{'); open != std::string::npos; open = text.find('{', open + 1)) {
+        const size_t close = text.find('}', open);
+        if (close == std::string::npos) break;
+        const std::string inner = text.substr(open + 1, close - open - 1);
+        out.push_back(inner.substr(0, inner.find(':')));
+    }
+    return out;
+}
+
+// Walks a node and its children with the fields in scope and reports names that don't exist
+void checkBindings(const ui::SourceNode& node, const reflect::TypeInfo* scope, const std::string& where, std::vector<std::string>& out) {
+    std::string value;
+    const std::string at = where + (node.name.empty() ? node.kind : node.name);
+    for (const BindingKey& b : kBindings) {
+        if (!ui::getProperty(node, b.key, value) || value.empty()) continue;
+        const std::string name = b.negatable && value[0] == '!' ? value.substr(1) : value;
+        if (!fieldAt(scope, name)) out.push_back(at + ": " + b.key + " " + value);
+    }
+    if (ui::getProperty(node, "content", value))
+        for (const std::string& name : textFields(value))
+            if (!fieldAt(scope, name)) out.push_back(at + ": {" + name + "}");
+    if (node.kind == "use") return; // the component file has its own view model paths
+    const reflect::TypeInfo* inner = scope;
+    if (ui::getProperty(node, "list", value)) {
+        const reflect::FieldInfo* f = fieldAt(scope, value);
+        if (!f || !isList(*f)) return; // already reported; names inside can't be checked
+        inner = f->value->element->type;
+    }
+    for (const ui::SourceNode& child : node.children) checkBindings(child, inner, at + " > ", out);
+}
+
 std::vector<f32> numbers(const std::string& value) {
     std::vector<f32> out;
     const char* p = value.c_str();
@@ -420,6 +498,7 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
 
     const char* const states[] = {tr("Normal"), tr("Hover"), tr("Pressed"), tr("Focus"), tr("Disabled"), tr("Checked")};
     ImGui::Combo(tr("Show state"), &m_previewState, states, 6);
+    drawBindings(node);
 
     // Every line of the node: edit as text, remove with x. Comments are shown dimmed
     ImGui::SeparatorText(tr("Lines"));
@@ -492,6 +571,68 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
             }
         }
         m_newProperty.clear();
+    }
+}
+
+const reflect::TypeInfo* UiPanel::bindingScope(const ui::SourcePath& path) const {
+    const reflect::TypeInfo* scope = m_vmType;
+    std::string value;
+    for (size_t depth = 0; depth < path.size() && scope; ++depth) { // every ancestor: a list changes the scope for what's inside it
+        const ui::SourceNode* parent = ui::findNode(m_source, ui::SourcePath(path.begin(), path.begin() + static_cast<std::ptrdiff_t>(depth)));
+        if (!parent || !ui::getProperty(*parent, "list", value)) continue;
+        const reflect::FieldInfo* f = fieldAt(scope, value);
+        scope = f && isList(*f) ? f->value->element->type : nullptr;
+    }
+    return scope;
+}
+
+void UiPanel::collectBindingProblems(std::vector<std::string>& out) const {
+    if (!m_vmType || m_path.empty()) return;
+    if (const ui::SourceNode* board = ui::findNode(m_source, {})) checkBindings(*board, m_vmType, m_path + ": ", out);
+}
+
+void UiPanel::drawBindings(ui::SourceNode& node) {
+    ImGui::SeparatorText(tr("Bindings"));
+    const reflect::TypeInfo* scope = bindingScope(m_selection);
+    if (!scope) {
+        ImGui::TextDisabled("%s", tr("Pick a view model under Preview values to choose fields here."));
+        return;
+    }
+    std::string value;
+    for (const BindingKey& b : kBindings) {
+        const bool has = ui::getProperty(node, b.key, value);
+        const bool negated = has && b.negatable && !value.empty() && value[0] == '!';
+        const std::string current = !has ? std::string() : negated ? value.substr(1) : value;
+        const bool unknown = has && !fieldAt(scope, current);
+        ImGui::PushID(b.key);
+        if (unknown) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
+        const std::string preview = !has ? std::string(tr("(none)")) : unknown ? trf("%s (no such field)", current.c_str()) : current;
+        const bool open = ImGui::BeginCombo(propertyRow(b.label()).c_str(), preview.c_str());
+        if (unknown) ImGui::PopStyleColor();
+        if (open) {
+            if (ImGui::Selectable(tr("(none)"), !has)) ui::removeProperty(node, b.key);
+            std::vector<std::string> names;
+            fieldNames(*scope, "", b.test, names);
+            for (const std::string& name : names)
+                if (ImGui::Selectable(name.c_str(), name == current)) ui::setProperty(node, b.key, (negated ? "!" : "") + name);
+            ImGui::EndCombo();
+        }
+        if (b.negatable && has) {
+            bool invert = negated;
+            if (ImGui::Checkbox(tr("Invert"), &invert)) ui::setProperty(node, b.key, (invert ? "!" : "") + current);
+        }
+        ImGui::PopID();
+    }
+    if (node.kind == "text" && ui::getProperty(node, "content", value)) {
+        if (ImGui::BeginCombo(propertyRow(tr("Insert field")).c_str(), tr("Choose..."))) {
+            std::vector<std::string> names;
+            fieldNames(*scope, "", anyValue, names);
+            for (const std::string& name : names)
+                if (ImGui::Selectable(name.c_str())) ui::setProperty(node, "content", value + "{" + name + "}");
+            ImGui::EndCombo();
+        }
+        for (const std::string& name : textFields(value))
+            if (!fieldAt(scope, name)) ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.38f, 1.0f), "%s", trf("%s (no such field)", ("{" + name + "}").c_str()).c_str());
     }
 }
 

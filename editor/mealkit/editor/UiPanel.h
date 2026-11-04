@@ -60,6 +60,9 @@ public:
         m_testDrag[1] = dy;
     }
 
+    // Bindings of the open screen that name no field of the chosen preview view model ("screen: node: visible foo")
+    void collectBindingProblems(std::vector<std::string>& out) const;
+
 private:
     void openSelected();
     void bindViewModel();
@@ -72,6 +75,8 @@ private:
     void drawEditor();          // node tree + properties
     void drawTree(ui::SourceNode& node, const ui::SourcePath& path);
     void drawProperties(ui::SourceNode& node, bool placedByLayout);
+    void drawBindings(ui::SourceNode& node);
+    const reflect::TypeInfo* bindingScope(const ui::SourcePath& path) const; // view model type a node's fields are read from (element type inside a list)
     void drawSavePrompt();
     bool insertNode(ui::SourceNode node);
     enum class Drag : u8 { None, Move, Resize, Reorder };
