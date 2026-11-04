@@ -133,18 +133,6 @@ void UiPanel::draw(bool* open) {
     if (m_screen) drawEditor();
     drawOverlay();
 
-    // Penpot plugin: paste this address into Penpot's plugin manager (Ctrl+Alt+P). Changes every time the editor starts
-    ImGui::SeparatorText("Penpot");
-    if (m_penpotUrl.empty()) {
-        ImGui::TextDisabled("%s", tr("The import server is not running (see the log)."));
-    } else {
-        ImGui::TextWrapped("%s", tr("Plugin address (paste it into the plugin manager in Penpot, Ctrl+Alt+P). It changes every time the editor starts."));
-        ImGui::SetNextItemWidth(-60.0f);
-        ImGui::InputText("##penpotUrl", m_penpotUrl.data(), m_penpotUrl.size() + 1, ImGuiInputTextFlags_ReadOnly);
-        ImGui::SameLine();
-        if (ImGui::Button(tr("Copy"))) ImGui::SetClipboardText(m_penpotUrl.c_str());
-    }
-
     ImGui::SeparatorText(tr("Screen preview"));
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::BeginCombo("##resolution", kResolutions[m_resolution].label)) {
@@ -152,9 +140,9 @@ void UiPanel::draw(bool* open) {
             if (ImGui::Selectable(kResolutions[i].label, m_resolution == i)) m_resolution = i;
         ImGui::EndCombo();
     }
-    if (ImGui::SliderFloat(tr("UI scale"), &m_scale, 0.5f, 2.0f, "%.2f")) m_ui.setScale(m_scale);
+    if (ImGui::SliderFloat(propertyRow(tr("UI scale")).c_str(), &m_scale, 0.5f, 2.0f, "%.2f")) m_ui.setScale(m_scale);
     const std::vector<std::string> languages = m_strings.languages();
-    if (!languages.empty() && ImGui::BeginCombo(tr("Language"), m_strings.language().c_str())) {
+    if (!languages.empty() && ImGui::BeginCombo(propertyRow(tr("Language")).c_str(), m_strings.language().c_str())) {
         for (const std::string& lang : languages)
             if (ImGui::Selectable(lang.c_str(), lang == m_strings.language())) {
                 m_language = lang;
@@ -162,11 +150,11 @@ void UiPanel::draw(bool* open) {
             }
         ImGui::EndCombo();
     }
-    if (ImGui::Checkbox(tr("Show focus"), &m_showFocus)) m_ui.setFocusVisible(m_showFocus);
+    if (ImGui::Checkbox(propertyRow(tr("Show focus")).c_str(), &m_showFocus)) m_ui.setFocusVisible(m_showFocus);
 
     ImGui::SeparatorText(tr("Preview values"));
     const char* vmName = m_vmType ? m_vmType->name : tr("(none)");
-    if (ImGui::BeginCombo(tr("View model"), vmName)) {
+    if (ImGui::BeginCombo(propertyRow(tr("View model")).c_str(), vmName)) {
         if (ImGui::Selectable(tr("(none)"), !m_vmType)) {
             m_vmType = nullptr;
             m_vm = {};
@@ -208,6 +196,20 @@ void UiPanel::draw(bool* open) {
         if (info.nodes > kNodeBudget) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("Over the node budget"));
         if (info.errors.empty()) ImGui::TextDisabled("%s", tr("No problems"));
         for (const std::string& e : info.errors) ImGui::TextWrapped("%s", e.c_str());
+    }
+
+    // Penpot plugin, closed until needed: paste this address into Penpot's plugin manager (Ctrl+Alt+P). Changes every time the editor starts
+    ImGui::Spacing();
+    if (sectionHeader("Penpot")) {
+        if (m_penpotUrl.empty()) {
+            ImGui::TextDisabled("%s", tr("The import server is not running (see the log)."));
+        } else {
+            ImGui::TextWrapped("%s", tr("Plugin address (paste it into the plugin manager in Penpot, Ctrl+Alt+P). It changes every time the editor starts."));
+            ImGui::SetNextItemWidth(-60.0f);
+            ImGui::InputText("##penpotUrl", m_penpotUrl.data(), m_penpotUrl.size() + 1, ImGuiInputTextFlags_ReadOnly);
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Copy"))) ImGui::SetClipboardText(m_penpotUrl.c_str());
+        }
     }
     ImGui::End();
 }
