@@ -39,6 +39,12 @@ public:
     bool dirty() const { return m_editable && m_live != m_saved; }
     bool save(); // writes the screen's file; false on failure (logged)
     bool deleteSelected();
+    bool duplicateSelected();
+    bool copySelected(); // the node as .ui text on the clipboard
+    bool paste();
+    // kind: frame / text / image / use (args = component path). Inside the selected frame, else after the selected node
+    bool addNew(const std::string& kind, const std::string& args = {});
+    bool wrapSelected();
     // Mouse over the scene view every frame (screen pixels): press selects the topmost box (ctrl: the one beneath), dragging the
     // selection moves it (free nodes, snapping unless ctrl) or reorders it (nodes a layout places), handles resize. overUi = an editor
     // window has the mouse. true while the panel uses the mouse
@@ -67,6 +73,7 @@ private:
     void drawTree(ui::SourceNode& node, const ui::SourcePath& path);
     void drawProperties(ui::SourceNode& node, bool placedByLayout);
     void drawSavePrompt();
+    bool insertNode(ui::SourceNode node);
     enum class Drag : u8 { None, Move, Resize, Reorder };
     bool boxOf(const ui::SourcePath& path, ui::NodeBox& out) const; // first visible box of a node (last layout)
     std::string layoutOf(const ui::SourcePath& path) const;          // parent's layout if it places this node, else empty

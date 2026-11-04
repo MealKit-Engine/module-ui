@@ -25,10 +25,14 @@ using mkui::findNode;
 using mkui::getProperty;
 using mkui::mapDocumentNodes;
 using mkui::moveNode;
+using mkui::parseNodeText;
 using mkui::parseSource;
 using mkui::removeNode;
 using mkui::removeProperty;
 using mkui::setProperty;
+using mkui::uniqueName;
+using mkui::wrapNode;
+using mkui::writeNodeText;
 using mkui::writeSource;
 
 bool loadTheme(Theme& out, std::vector<std::string>* errors = nullptr);

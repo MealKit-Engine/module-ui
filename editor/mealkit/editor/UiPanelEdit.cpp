@@ -180,6 +180,98 @@ bool UiPanel::deleteSelected() {
     return true;
 }
 
+bool UiPanel::insertNode(ui::SourceNode node) {
+    if (!editing()) return false;
+    // Into a selected frame or the board; next to a selected text, image or component
+    ui::SourcePath parent;
+    u32 at = 0xFFFFFFFFu;
+    if (m_hasSelection) {
+        const ui::SourceNode* n = ui::findNode(m_source, m_selection);
+        if (n && (n->kind == "frame" || n->kind == "board")) {
+            parent = m_selection;
+        } else if (!m_selection.empty()) {
+            parent.assign(m_selection.begin(), m_selection.end() - 1);
+            at = m_selection.back() + 1;
+        }
+    }
+    node.name = ui::uniqueName(m_source, node.name);
+    m_selection = ui::addNode(m_source, parent, at, std::move(node));
+    m_hasSelection = true;
+    syncSource();
+    return true;
+}
+
+bool UiPanel::addNew(const std::string& kind, const std::string& args) {
+    ui::SourceNode n;
+    n.kind = kind;
+    n.name = kind;
+    n.args = args;
+    auto line = [&n](const char* text) { n.items.push_back({text, -1}); };
+    if (kind == "frame") {
+        line("size 200 100");
+        line("fill #FFFFFF22");
+    } else if (kind == "text") {
+        line("content Text");
+        line("fontSize 24");
+        line("color #FFFFFF");
+    } else if (kind == "image") {
+        line("size 64 64");
+    } else if (kind == "use") {
+        const size_t slash = args.rfind('/'), dot = args.rfind('.');
+        n.name = args.substr(slash == std::string::npos ? 0 : slash + 1, dot == std::string::npos ? std::string::npos : dot - (slash == std::string::npos ? 0 : slash + 1));
+    }
+    return insertNode(std::move(n));
+}
+
+bool UiPanel::duplicateSelected() {
+    if (!editing() || !m_hasSelection || m_selection.empty()) return false;
+    const ui::SourceNode* n = ui::findNode(m_source, m_selection);
+    if (!n) return false;
+    ui::SourceNode copy = *n;
+    copy.name = ui::uniqueName(m_source, copy.name);
+    const ui::SourcePath parent(m_selection.begin(), m_selection.end() - 1);
+    m_selection = ui::addNode(m_source, parent, m_selection.back() + 1, std::move(copy));
+    syncSource();
+    return true;
+}
+
+bool UiPanel::copySelected() {
+    if (!editing() || !m_hasSelection || m_selection.empty()) return false;
+    const ui::SourceNode* n = ui::findNode(m_source, m_selection);
+    if (!n) return false;
+    ImGui::SetClipboardText(ui::writeNodeText(*n).c_str());
+    return true;
+}
+
+bool UiPanel::paste() {
+    const char* text = ImGui::GetClipboardText();
+    ui::SourceNode n;
+    if (!editing() || !text || !ui::parseNodeText(toLf(text), n)) return false;
+    return insertNode(std::move(n));
+}
+
+bool UiPanel::wrapSelected() {
+    if (!editing() || !m_hasSelection || m_selection.empty()) return false;
+    ui::SourceNode* n = ui::findNode(m_source, m_selection);
+    ui::NodeBox b;
+    if (!n || !boxOf(m_selection, b)) return false;
+    // The frame takes the node's place and drawn size; a free node's pos moves to the frame
+    ui::SourceNode frame;
+    frame.kind = "frame";
+    frame.name = ui::uniqueName(m_source, "group");
+    std::string pos;
+    if (ui::getProperty(*n, "pos", pos)) {
+        frame.items.push_back({"pos " + pos, -1});
+        ui::setProperty(*n, "pos", "0 0");
+    }
+    frame.items.push_back({"size " + std::to_string(static_cast<int>(b.w + 0.5f)) + " " + std::to_string(static_cast<int>(b.h + 0.5f)), -1});
+    ui::SourcePath wrapped;
+    if (!ui::wrapNode(m_source, m_selection, std::move(frame), &wrapped)) return false;
+    m_selection = wrapped;
+    syncSource();
+    return true;
+}
+
 bool UiPanel::selectNode(const std::string& name) {
     m_editing = true;
     for (const ui::SourcePath& path : m_map)
@@ -223,6 +315,29 @@ void UiPanel::drawEditor() {
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     ImGui::TextWrapped("%s", tr("Click the preview to select (Ctrl+click: the box beneath), drag to move or reorder, handles resize (Ctrl: no snapping). Ctrl+S saves."));
     ImGui::PopStyleColor();
+
+    // New nodes; the rest acts on the selection
+    if (ImGui::SmallButton(tr("+ Frame"))) addNew("frame");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("+ Text"))) addNew("text");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("+ Image"))) addNew("image");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130.0f);
+    if (ImGui::BeginCombo("##addComponent", tr("+ Component"))) {
+        for (const std::string& f : m_files)
+            if (ImGui::Selectable(f.c_str()) && "ui/" + f != m_path) addNew("use", "ui/" + f);
+        ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(!m_hasSelection || m_selection.empty());
+    if (ImGui::SmallButton(tr("Duplicate"))) duplicateSelected();
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Copy"))) copySelected();
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Wrap in frame"))) wrapSelected();
+    ImGui::SameLine();
+    ImGui::EndDisabled();
+    if (ImGui::SmallButton(tr("Paste"))) paste();
 
     if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY)) {
         if (ui::SourceNode* board = ui::findNode(m_source, {})) drawTree(*board, {});
