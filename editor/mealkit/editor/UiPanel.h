@@ -23,7 +23,7 @@ public:
     void setProject(const std::string& defaultLanguage);
     // View model list of the game DLL (GameModule::viewModels, nullptr before unloading the DLL)
     void setViewModels(const std::vector<const reflect::TypeInfo*>* types);
-    void draw(bool* open);
+    void drawContent();
     void select(const std::string& uiFile); // automated tests: "hud.ui"
     void refresh();                         // reread the assets/ui file list
     void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot plugin install address (import server)

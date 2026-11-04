@@ -109,11 +109,7 @@ void UiPanel::bindViewModel() {
     if (m_screen) m_ui.bind(m_screen, m_vmType ? reflect::View{m_vmType, m_vm.data()} : reflect::View{});
 }
 
-void UiPanel::draw(bool* open) {
-    if (!ImGui::Begin(trl("UI"), open)) {
-        ImGui::End();
-        return;
-    }
+void UiPanel::drawContent() {
     if (m_files.empty()) refresh();
     if (m_files.empty()) ImGui::TextDisabled("%s", tr("No .ui files in assets/ui."));
     if (ImGui::BeginListBox("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(6.0f, static_cast<f32>(m_files.size()) + 0.5f)))) {
@@ -211,7 +207,6 @@ void UiPanel::draw(bool* open) {
             if (ImGui::Button(tr("Copy"))) ImGui::SetClipboardText(m_penpotUrl.c_str());
         }
     }
-    ImGui::End();
 }
 
 void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneView, f64 dt) {
