@@ -103,6 +103,8 @@ public:
     ScreenInfo info(ScreenId screen) const;
     std::vector<NodeBox> boxes(ScreenId screen) const;
     void setDraft(ScreenId screen, const std::string* text); // editor: unsaved .ui text instead of the file (nullptr = the file)
+    void setPreviewState(ScreenId screen, i32 node, mkui::State state); // editor: a Document node shows this state (node < 0: none)
+    void moveFocus(ScreenId screen, int direction); // editor: one ui.* move (0 up, 1 down, 2 left, 3 right)
     void setFocusVisible(bool always); // preview: always show the focus indicator
     u32 quadCount() const;             // rectangle count of the last render
     // For widget interaction tests: as if pressed, by node name (automated tests/preview)

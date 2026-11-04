@@ -46,6 +46,7 @@ public:
     void drawOverlay(); // selection, handles, padding, snap guides, insert line (ImGui background list, each frame)
     // Automated tests (--ui-select): edit mode on, node chosen by name
     bool selectNode(const std::string& name);
+    void setPreviewState(int state) { m_previewState = state; } // --ui-state: mkui::State shown on the selected node
     // Automated tests (--ui-drag): drags node by (dx, dy) logical units after the first layout, logs the node's pos/size lines
     void queueTestDrag(const std::string& node, f32 dx, f32 dy) {
         m_testDragNode = node;
@@ -56,6 +57,9 @@ public:
 private:
     void openSelected();
     void bindViewModel();
+    std::string valuesFile(const reflect::TypeInfo& type) const; // art/ui/samples/<screen>.<type>.values
+    void loadValues();  // view model with a saved values file for this screen, if there is one
+    bool saveValues();
     void loadSource();          // reads the screen's file into m_source (edit history cleared)
     void syncSource();          // after edits: new text → preview draft, node map; commits history when no widget is active
     void setText(const std::string& text); // undo/redo: replace the source with this text
@@ -122,6 +126,7 @@ private:
     u32 m_insertAt = 0;
     std::vector<ui::NodeBox> m_boxes; // last layout's boxes
     f32 m_originX = 0, m_originY = 0, m_scaleK = 1;
+    int m_previewState = 0; // mkui::State shown on the selected node
     std::string m_testDragNode;
     f32 m_testDrag[2] = {};
 };

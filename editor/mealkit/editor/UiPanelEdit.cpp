@@ -220,7 +220,9 @@ void UiPanel::drawEditor() {
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", tr("Unsaved"));
     }
     if (!m_editing) return;
-    ImGui::TextDisabled("%s", tr("Click the preview to select (Ctrl+click: the box beneath), drag to move or reorder, handles resize (Ctrl: no snapping). Ctrl+S saves."));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", tr("Click the preview to select (Ctrl+click: the box beneath), drag to move or reorder, handles resize (Ctrl: no snapping). Ctrl+S saves."));
+    ImGui::PopStyleColor();
 
     if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY)) {
         if (ui::SourceNode* board = ui::findNode(m_source, {})) drawTree(*board, {});
@@ -294,6 +296,9 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
             if (ImGui::ColorEdit4(label.c_str(), rgba, ImGuiColorEditFlags_AlphaBar)) ui::setProperty(node, key, hex(rgba, value.size() == 9 || rgba[3] < 1.0f));
         }
     }
+
+    const char* const states[] = {tr("Normal"), tr("Hover"), tr("Pressed"), tr("Focus"), tr("Disabled"), tr("Checked")};
+    ImGui::Combo(tr("Show state"), &m_previewState, states, 6);
 
     // Every line of the node: edit as text, remove with x. Comments are shown dimmed
     ImGui::SeparatorText(tr("Lines"));

@@ -22,6 +22,7 @@ constexpr Resolution kResolutions[] = {
     {"1024x768 (4:3)", 1024, 768},    {"1080x1920 (9:16)", 1080, 1920},
 };
 constexpr u32 kNodeBudget = 500;
+constexpr text::Format kValuesFormat{"uivalues", 1};
 
 } // namespace
 
@@ -42,7 +43,38 @@ void UiPanel::setViewModels(const std::vector<const reflect::TypeInfo*>* types) 
         if (m_screen) m_ui.bind(m_screen, reflect::View{});
         m_vm = {};
         m_vmType = nullptr;
+        if (types) loadValues();
     }
+}
+
+std::string UiPanel::valuesFile(const reflect::TypeInfo& type) const {
+    if (m_selected < 0 || m_selected >= static_cast<int>(m_files.size())) return {};
+    std::string screen = m_files[static_cast<size_t>(m_selected)];
+    if (const size_t dot = screen.rfind('.'); dot != std::string::npos) screen.resize(dot);
+    return projectRoot() + "/art/ui/samples/" + screen + "." + type.name + ".values";
+}
+
+void UiPanel::loadValues() {
+    if (!m_viewModels || !m_screen) return;
+    for (const reflect::TypeInfo* t : *m_viewModels) {
+        const std::string file = valuesFile(*t);
+        if (file.empty() || !fileExists(file)) continue;
+        m_vmType = t;
+        m_vm = reflect::Instance(*t);
+        std::string error;
+        if (reflect::loadTextFile(*t, m_vm.data(), file, kValuesFormat, &error)) MEALKIT_INFO("UI preview: values from %s", file.c_str());
+        else MEALKIT_WARN("UI preview: %s: %s", file.c_str(), error.c_str());
+        bindViewModel();
+        return;
+    }
+}
+
+bool UiPanel::saveValues() {
+    if (!m_vmType) return false;
+    const std::string file = valuesFile(*m_vmType);
+    if (file.empty()) return false;
+    createDirectories(projectRoot() + "/art/ui/samples");
+    return reflect::saveTextFile(*m_vmType, m_vm.data(), file, kValuesFormat, "# Preview values for the editor [UI] panel (not shipped)");
 }
 
 void UiPanel::refresh() {
@@ -68,6 +100,7 @@ void UiPanel::openSelected() {
         m_path = "ui/" + m_files[static_cast<size_t>(m_selected)];
         m_screen = m_ui.open(m_path);
         bindViewModel();
+        loadValues();
     }
     loadSource();
 }
@@ -149,7 +182,23 @@ void UiPanel::draw(bool* open) {
         ImGui::EndCombo();
     }
     if (!m_viewModels) ImGui::TextDisabled("%s", tr("View models appear when the game code is loaded."));
-    if (m_vmType) drawFields(*m_vmType, m_vm.data());
+    if (m_vmType) {
+        drawFields(*m_vmType, m_vm.data());
+        if (ImGui::SmallButton(tr("Save values"))) saveValues();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr("Kept in art/ui/samples, loaded with this screen."));
+    }
+    if (m_screen) {
+        // Keyboard/gamepad focus: one move like the ui.* actions
+        ImGui::SeparatorText(tr("Focus"));
+        const char* const moves[] = {tr("Up"), tr("Down"), tr("Left"), tr("Right")};
+        for (int i = 0; i < 4; ++i) {
+            if (i) ImGui::SameLine();
+            if (ImGui::SmallButton(moves[i])) m_ui.moveFocus(m_screen, i);
+        }
+        const std::string focus = m_ui.info(m_screen).focus;
+        ImGui::TextDisabled("%s", focus.empty() ? tr("(none)") : focus.c_str());
+    }
 
     if (m_screen) {
         const ui::ScreenInfo info = m_ui.info(m_screen);
@@ -198,6 +247,12 @@ void UiPanel::render(render::Renderer& renderer, const render::Viewport& sceneVi
     frame.strokeWidth = 1.0f;
     frame.strokeColor = render::rgba(255, 210, 80, 160);
     renderer.drawUi(&frame, 1);
+    // State of the selected node shown as if it were real (hover, pressed ...)
+    i32 previewNode = -1;
+    if (editing() && m_hasSelection && m_previewState > 0)
+        for (size_t i = 0; i < m_map.size() && previewNode < 0; ++i)
+            if (m_map[i] == m_selection) previewNode = static_cast<i32>(i);
+    m_ui.setPreviewState(m_screen, previewNode, static_cast<mkui::State>(m_previewState));
     m_ui.update({}, view, dt);
     m_ui.render(renderer);
     if (!m_testDragNode.empty()) { // --ui-drag: after the first layout
