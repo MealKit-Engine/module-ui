@@ -408,7 +408,7 @@ void UiPanel::drawEditor() {
     if (ImGui::SmallButton(tr("+ Image"))) addNew("image");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(130.0f);
-    if (ImGui::BeginCombo("##addComponent", tr("+ Component"))) {
+    if (beginCombo("##addComponent", tr("+ Component"))) {
         for (const std::string& f : m_files)
             if (ImGui::Selectable(f.c_str()) && "ui/" + f != m_path) addNew("use", "ui/" + f);
         ImGui::EndCombo();
@@ -492,7 +492,7 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
         f32 rgba[4];
         if (ui::getProperty(node, key, value) && parseHex(value, rgba)) {
             const std::string label = std::string(key == std::string("fill") ? tr("Fill") : tr("Text color")) + "##" + key;
-            if (ImGui::ColorEdit4(label.c_str(), rgba, ImGuiColorEditFlags_AlphaBar)) ui::setProperty(node, key, hex(rgba, value.size() == 9 || rgba[3] < 1.0f));
+            if (colorEdit(propertyRow(label.c_str()).c_str(), rgba, true)) ui::setProperty(node, key, hex(rgba, value.size() == 9 || rgba[3] < 1.0f));
         }
     }
 
@@ -522,7 +522,7 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
     }
     // Add a property: pick the name, type the value
     ImGui::SetNextItemWidth(120.0f);
-    if (ImGui::BeginCombo("##addKey", tr("Add..."), ImGuiComboFlags_HeightLarge)) {
+    if (beginCombo("##addKey", tr("Add..."), ImGuiComboFlags_HeightLarge)) {
         for (const char* key : kProperties)
             if (ImGui::Selectable(key)) m_newProperty = std::string(key) + " ";
         ImGui::EndCombo();
@@ -607,7 +607,7 @@ void UiPanel::drawBindings(ui::SourceNode& node) {
         ImGui::PushID(b.key);
         if (unknown) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
         const std::string preview = !has ? std::string(tr("(none)")) : unknown ? trf("%s (no such field)", current.c_str()) : current;
-        const bool open = ImGui::BeginCombo(propertyRow(b.label()).c_str(), preview.c_str());
+        const bool open = beginCombo(propertyRow(b.label()).c_str(), preview.c_str());
         if (unknown) ImGui::PopStyleColor();
         if (open) {
             if (ImGui::Selectable(tr("(none)"), !has)) ui::removeProperty(node, b.key);
@@ -624,7 +624,7 @@ void UiPanel::drawBindings(ui::SourceNode& node) {
         ImGui::PopID();
     }
     if (node.kind == "text" && ui::getProperty(node, "content", value)) {
-        if (ImGui::BeginCombo(propertyRow(tr("Insert field")).c_str(), tr("Choose..."))) {
+        if (beginCombo(propertyRow(tr("Insert field")).c_str(), tr("Choose..."))) {
             std::vector<std::string> names;
             fieldNames(*scope, "", anyValue, names);
             for (const std::string& name : names)

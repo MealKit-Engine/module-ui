@@ -112,7 +112,9 @@ void UiPanel::bindViewModel() {
 void UiPanel::drawContent() {
     if (m_files.empty()) refresh();
     if (m_files.empty()) ImGui::TextDisabled("%s", tr("No .ui files in assets/ui."));
-    if (ImGui::BeginListBox("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(6.0f, static_cast<f32>(m_files.size()) + 0.5f)))) {
+    // Drag its bottom edge to see more screens at once
+    if (ImGui::BeginChild("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(8.0f, static_cast<f32>(m_files.size()) + 1.0f)),
+                          ImGuiChildFlags_ResizeY | ImGuiChildFlags_FrameStyle)) {
         for (size_t i = 0; i < m_files.size(); ++i)
             if (ImGui::Selectable(m_files[i].c_str(), m_selected == static_cast<int>(i)) && m_selected != static_cast<int>(i)) {
                 if (dirty()) {
@@ -122,8 +124,8 @@ void UiPanel::drawContent() {
                     openSelected();
                 }
             }
-        ImGui::EndListBox();
     }
+    ImGui::EndChild();
     if (ImGui::SmallButton(tr("Refresh"))) refresh();
     drawSavePrompt();
     if (m_screen) drawEditor();
@@ -131,14 +133,14 @@ void UiPanel::drawContent() {
 
     ImGui::SeparatorText(tr("Screen preview"));
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::BeginCombo("##resolution", kResolutions[m_resolution].label)) {
+    if (beginCombo("##resolution", kResolutions[m_resolution].label)) {
         for (int i = 0; i < static_cast<int>(std::size(kResolutions)); ++i)
             if (ImGui::Selectable(kResolutions[i].label, m_resolution == i)) m_resolution = i;
         ImGui::EndCombo();
     }
     if (ImGui::SliderFloat(propertyRow(tr("UI scale")).c_str(), &m_scale, 0.5f, 2.0f, "%.2f")) m_ui.setScale(m_scale);
     const std::vector<std::string> languages = m_strings.languages();
-    if (!languages.empty() && ImGui::BeginCombo(propertyRow(tr("Language")).c_str(), m_strings.language().c_str())) {
+    if (!languages.empty() && beginCombo(propertyRow(tr("Language")).c_str(), m_strings.language().c_str())) {
         for (const std::string& lang : languages)
             if (ImGui::Selectable(lang.c_str(), lang == m_strings.language())) {
                 m_language = lang;
@@ -150,7 +152,7 @@ void UiPanel::drawContent() {
 
     ImGui::SeparatorText(tr("Preview values"));
     const char* vmName = m_vmType ? m_vmType->name : tr("(none)");
-    if (ImGui::BeginCombo(propertyRow(tr("View model")).c_str(), vmName)) {
+    if (beginCombo(propertyRow(tr("View model")).c_str(), vmName)) {
         if (ImGui::Selectable(tr("(none)"), !m_vmType)) {
             m_vmType = nullptr;
             m_vm = {};
