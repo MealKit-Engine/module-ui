@@ -27,10 +27,16 @@ static_assert(mkui::kQuadShape == render::kUiShape && mkui::kQuadImage == render
 static_assert(mkui::kAtlasSize == render::kUiAtlasSize);
 static_assert(mkui::rgba(1, 2, 3, 4) == render::rgba(1, 2, 3, 4));
 
+// The renderer has one pair of UI atlases, but each System packs its own glyphs from the corner. Only the System in use may
+// write them (the editor's [UI] preview, then a play session, then the preview again): the next one rebakes when it takes over.
+u64 g_atlasUser = 0;
+u64 g_nextAtlasUser = 1;
+
 // Assets, logs, strings and atlases for the runtime
 struct EngineHost final : mkui::Host {
     render::Renderer* renderer = nullptr;
     const loc::Strings* strings = nullptr;
+    u64 atlasUser = g_nextAtlasUser++;
 
     bool readFile(const std::string& assetPath, std::string& out) override {
         const std::string path = findAssetFile(assetPath);
@@ -60,7 +66,7 @@ struct EngineHost final : mkui::Host {
         return true;
     }
     void uploadAtlas(mkui::AtlasKind atlas, u32 x, u32 y, u32 w, u32 h, const u8* pixels) override {
-        if (renderer)
+        if (renderer && atlasUser == g_atlasUser)
             renderer->updateUiAtlas(atlas == mkui::AtlasKind::Glyphs ? render::UiAtlas::Glyphs : render::UiAtlas::Images, x, y, w, h, pixels);
     }
 };
@@ -128,6 +134,21 @@ struct System::Impl {
     EngineHost host;
     ReflectBinder binder;
     mkui::System ui{host, binder};
+
+    void takeAtlas() {
+        if (!host.renderer || host.atlasUser == g_atlasUser) return;
+        clearAtlases(*host.renderer);
+        g_atlasUser = host.atlasUser;
+        ui.reload();
+    }
+
+    // The packer leaves gaps between entries and linear filtering reads them: leftovers from the previous user would show as specks around text
+    static void clearAtlases(render::Renderer& renderer) {
+        if (g_atlasUser == 0) return; // nothing written yet
+        const std::vector<u8> zeros(static_cast<size_t>(render::kUiAtlasSize) * render::kUiAtlasSize * 4);
+        renderer.updateUiAtlas(render::UiAtlas::Glyphs, 0, 0, render::kUiAtlasSize, render::kUiAtlasSize, zeros.data());
+        renderer.updateUiAtlas(render::UiAtlas::Images, 0, 0, render::kUiAtlasSize, render::kUiAtlasSize, zeros.data());
+    }
 };
 
 System::System() : m(new Impl()) {}
@@ -136,6 +157,10 @@ System::~System() { delete m; }
 void System::init(render::Renderer* renderer, const loc::Strings* strings) {
     m->host.renderer = renderer;
     m->host.strings = strings;
+    if (renderer) {
+        Impl::clearAtlases(*renderer);
+        g_atlasUser = m->host.atlasUser;
+    }
     m->ui.reload();
 }
 
@@ -149,6 +174,7 @@ void System::setScale(f32 uiScale) { m->ui.setScale(uiScale); }
 f32 System::scale() const { return m->ui.scale(); }
 
 void System::update(const FrameInput& in, const render::Viewport& viewport, f64 dt) {
+    m->takeAtlas();
     mkui::FrameInput f;
     const Input* input = in.input;
     if (input && in.mouseAllowed) {
@@ -194,7 +220,10 @@ void System::render(render::Renderer& renderer) {
     renderer.drawUi(reinterpret_cast<const render::UiQuad*>(quads.data()), static_cast<u32>(quads.size()));
 }
 
-void System::layout(const render::Viewport& viewport) { m->ui.layout({viewport.x, viewport.y, viewport.width, viewport.height}); }
+void System::layout(const render::Viewport& viewport) {
+    m->takeAtlas();
+    m->ui.layout({viewport.x, viewport.y, viewport.width, viewport.height});
+}
 
 ScreenInfo System::info(ScreenId screen) const { return m->ui.info(screen); }
 std::vector<NodeBox> System::boxes(ScreenId screen) const { return m->ui.boxes(screen); }
