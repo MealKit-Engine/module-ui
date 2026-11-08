@@ -2,9 +2,10 @@
 # requires: modules this folder may include besides the kernel (core, platform, jobs), as name minVersion.
 @format engine-module 1
 name ui
-version 0.1.0
+version 0.1.1
 kernel 0.9
 kind view
+layer framework
 requires input 0.1 loc 0.1 render 0.1
 tag ui
 summary Game screen UI glue over mkui
