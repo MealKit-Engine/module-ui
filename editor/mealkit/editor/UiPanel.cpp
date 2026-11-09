@@ -1,14 +1,20 @@
 #include "mealkit/editor/UiPanel.h"
 
 #include "mealkit/core/Log.h"
+#include "mealkit/editor/CodeLink.h"
 #include "mealkit/editor/FieldEditor.h"
+#include "mealkit/editor/FuzzyMatch.h"
 #include "mealkit/editor/ImGuiLayer.h"
 #include "mealkit/editor/Strings.h"
 #include "mealkit/platform/Paths.h"
+#include "mealkit/platform/Process.h"
 #include "mealkit/ui/Document.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <imgui.h>
 
@@ -23,20 +29,89 @@ constexpr Resolution kResolutions[] = {
     {"1920x1080 (16:9)", 1920, 1080}, {"1280x720 (16:9)", 1280, 720}, {"2560x1080 (21:9)", 2560, 1080},
     {"1024x768 (4:3)", 1024, 768},    {"1080x1920 (9:16)", 1080, 1920},
 };
+constexpr int kCustomResolution = static_cast<int>(std::size(kResolutions));
 constexpr u32 kNodeBudget = 500;
 constexpr text::Format kValuesFormat{"uivalues", 1};
 
 } // namespace
 
+UiPanel::Size UiPanel::resolution() const {
+    if (m_resolution >= 0 && m_resolution < kCustomResolution) return {kResolutions[m_resolution].w, kResolutions[m_resolution].h};
+    return {static_cast<f32>(std::max(m_customRes[0], 16)), static_cast<f32>(std::max(m_customRes[1], 16))};
+}
+
 void UiPanel::setProject(const std::string& defaultLanguage) {
     m_defaultLanguage = defaultLanguage.empty() ? "ko" : defaultLanguage;
-    m_language.clear();
-    m_strings.load(m_defaultLanguage, m_defaultLanguage);
+    m_strings.load(m_language.empty() ? m_defaultLanguage : m_language, m_defaultLanguage); // m_language: kept from panels.txt, if any
     m_ui.closeAll();
+    m_ui.setScale(m_scale);
     m_screen = ui::kNoScreen;
     m_selected = -1;
     m_ready = false;
     refresh();
+    if (!m_restoreScreen.empty()) { // opened once the renderer is there (render), like select()
+        for (size_t i = 0; i < m_files.size(); ++i)
+            if (m_files[i] == m_restoreScreen) m_selected = static_cast<int>(i);
+        m_restoreScreen.clear();
+    }
+}
+
+void UiPanel::saveState(std::string& text) const {
+    const auto add = [&text](const char* key, const std::string& value) { text += std::string("ui.") + key + " " + value + "\n"; };
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_files.size())) add("screen", m_files[static_cast<size_t>(m_selected)]);
+    add("resolution", std::to_string(m_resolution));
+    add("custom", std::to_string(m_customRes[0]) + " " + std::to_string(m_customRes[1]));
+    if (!m_language.empty()) add("language", m_language);
+    char scale[16];
+    std::snprintf(scale, sizeof scale, "%.2f", static_cast<double>(m_scale));
+    add("scale", scale);
+    add("columns", std::to_string((m_leftOpen ? 1 : 0) | (m_rightOpen ? 2 : 0)));
+}
+
+bool UiPanel::loadState(const std::string& key, const std::string& value) {
+    if (key.rfind("ui.", 0) != 0) return false;
+    const std::string k = key.substr(3);
+    if (k == "screen") m_restoreScreen = value;
+    else if (k == "resolution") m_resolution = std::clamp(std::atoi(value.c_str()), 0, kCustomResolution);
+    else if (k == "custom") {
+        char* end = nullptr;
+        m_customRes[0] = static_cast<i32>(std::strtol(value.c_str(), &end, 10));
+        m_customRes[1] = static_cast<i32>(std::strtol(end, nullptr, 10));
+    }
+    else if (k == "language") m_language = value;
+    else if (k == "scale") m_scale = std::clamp(static_cast<f32>(std::atof(value.c_str())), 0.5f, 2.0f);
+    else if (k == "columns") {
+        const int bits = std::atoi(value.c_str());
+        m_leftOpen = (bits & 1) != 0;
+        m_rightOpen = (bits & 2) != 0;
+    } else return false;
+    return true;
+}
+
+void UiPanel::zoomActual() {
+    m_zoom = 1.0f;
+    m_pan[0] = m_pan[1] = 0.0f;
+}
+
+void UiPanel::zoomFit() {
+    m_zoom = 0.0f;
+    m_fitWidth = false;
+    m_pan[0] = m_pan[1] = 0.0f;
+}
+
+void UiPanel::frameSelection() {
+    ui::NodeBox b;
+    if (!m_hasSelection || m_selection.empty() || !boxOf(m_selection, b) || b.w <= 0.0f || b.h <= 0.0f) {
+        zoomFit();
+        return;
+    }
+    // Box at 70% of the canvas (at most 400%, so a small label doesn't fill the view), its center on the canvas center
+    // (the pan is the board center's offset from it)
+    const Size r = resolution();
+    const f32 k = std::clamp(std::min(m_canvas.width / b.w, m_canvas.height / b.h) * 0.7f, 0.05f, 4.0f);
+    m_zoom = k;
+    m_pan[0] = r.w * k * 0.5f - (b.x + b.w * 0.5f) * k;
+    m_pan[1] = r.h * k * 0.5f - (b.y + b.h * 0.5f) * k;
 }
 
 void UiPanel::setViewModels(const std::vector<const reflect::TypeInfo*>* types) {
@@ -111,6 +186,19 @@ void UiPanel::bindViewModel() {
     if (m_screen) m_ui.bind(m_screen, m_vmType ? reflect::View{m_vmType, m_vm.data()} : reflect::View{});
 }
 
+bool uiInputText(const char* id, const char* hint, std::string& text, int flags) {
+    return ImGui::InputTextWithHint(id, hint, text.data(), text.capacity() + 1, flags | ImGuiInputTextFlags_CallbackResize,
+                                    [](ImGuiInputTextCallbackData* d) {
+                                        if (d->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+                                            std::string& s = *static_cast<std::string*>(d->UserData);
+                                            s.resize(static_cast<size_t>(d->BufTextLen));
+                                            d->Buf = s.data();
+                                        }
+                                        return 0;
+                                    },
+                                    &text);
+}
+
 // The next toolbar group on this row if `width` pixels are left, else on a new row (a narrow tab wraps instead of clipping)
 void toolbarGap(f32 width) {
     ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.75f);
@@ -131,6 +219,10 @@ void toolbarGap(f32 width) {
 // path above it and view settings below it; the inspector on the right. Columns are resizable shares of the width.
 void UiPanel::drawWorkspace() {
     if (m_files.empty()) refresh();
+    // Keys go to the workspace while it (or one of its columns) has focus and no text field is being typed in
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive()) handleKeys();
+    collectNodeProblems();
+    m_treeHovered = false;
     const ImVec2 areaPos = ImGui::GetCursorScreenPos(), areaSize = ImGui::GetContentRegionAvail();
     m_area = {areaPos.x, areaPos.y, std::max(areaSize.x, 1.0f), std::max(areaSize.y, 1.0f)};
     ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -150,6 +242,7 @@ void UiPanel::drawWorkspace() {
     draw->ChannelsMerge();
     ImGui::SetCursorScreenPos(ImVec2(areaPos.x, rowBottom));
     drawSavePrompt();
+    drawNewScreen();
 
     // Ctrl+\ and the toolbar hide the side columns (as in Figma): a hidden one leaves a thin strip that peeks it in a popup
     const ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoPadOuterX |
@@ -262,12 +355,13 @@ void UiPanel::drawColumnStrip(bool left, f32 x, f32 y, f32 height) {
 void UiPanel::handleCanvasView() {
     if (!m_canvasHovered || !m_screen) return;
     ImGuiIO& io = ImGui::GetIO();
-    const f32 k = m_view.width > 0.0f ? m_view.width / kResolutions[m_resolution].w : 1.0f; // current pixels per logical unit
+    const Size r = resolution();
+    const f32 k = m_view.width > 0.0f ? m_view.width / r.w : 1.0f; // current pixels per logical unit
     if (io.MouseWheel != 0.0f) { // zoom around the mouse
         const f32 nk = std::clamp(k * std::pow(1.15f, io.MouseWheel), 0.05f, 8.0f);
         const f32 cx = m_canvas.x + m_canvas.width * 0.5f, cy = m_canvas.y + m_canvas.height * 0.5f;
         const f32 lx = (io.MousePos.x - m_view.x) / k, ly = (io.MousePos.y - m_view.y) / k; // logical point under the mouse
-        const f32 w = kResolutions[m_resolution].w * nk, h = kResolutions[m_resolution].h * nk;
+        const f32 w = r.w * nk, h = r.h * nk;
         // New top left keeps that point under the mouse; the pan is relative to the canvas center
         m_pan[0] = (io.MousePos.x - lx * nk) + w * 0.5f - cx;
         m_pan[1] = (io.MousePos.y - ly * nk) + h * 0.5f - cy;
@@ -312,16 +406,22 @@ void UiPanel::drawBreadcrumb() {
 void UiPanel::drawCanvasBar() {
     const f32 font = ImGui::GetFontSize();
     ImGui::SetNextItemWidth(font * 9.0f);
-    if (beginCombo("##resolution", kResolutions[m_resolution].label)) {
-        for (int i = 0; i < static_cast<int>(std::size(kResolutions)); ++i)
-            if (ImGui::Selectable(kResolutions[i].label, m_resolution == i)) {
+    const bool custom = m_resolution == kCustomResolution;
+    if (beginCombo("##resolution", custom ? tr("Custom") : kResolutions[m_resolution].label)) {
+        for (int i = 0; i <= kCustomResolution; ++i)
+            if (ImGui::Selectable(i == kCustomResolution ? tr("Custom") : kResolutions[i].label, m_resolution == i)) {
                 m_resolution = i;
-                m_zoom = 0.0f; // a new size starts fitted
-                m_pan[0] = m_pan[1] = 0.0f;
+                zoomFit(); // a new size starts fitted
             }
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Resolution"));
+    if (custom) { // width and height typed or dragged
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(font * 6.5f);
+        if (ImGui::DragInt2("##customRes", m_customRes, 1.0f, 16, 8192, "%d", ImGuiSliderFlags_AlwaysClamp)) zoomFit();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Width and height (drag or double-click to type)"));
+    }
     const std::vector<std::string> languages = m_strings.languages();
     if (!languages.empty()) {
         ImGui::SameLine();
@@ -347,7 +447,7 @@ void UiPanel::drawCanvasBar() {
     }
 
     // Zoom at the right end: - 75% + Fit
-    const f32 k = m_view.width > 0.0f ? m_view.width / kResolutions[m_resolution].w : 1.0f;
+    const f32 k = m_view.width > 0.0f ? m_view.width / resolution().w : 1.0f;
     char percent[16];
     std::snprintf(percent, sizeof percent, "%.0f%%", k * 100.0f);
     const f32 button = ImGui::GetFrameHeight();
@@ -377,35 +477,101 @@ void UiPanel::drawCanvasBar() {
 }
 
 void UiPanel::drawLeftColumn() {
-    ImGui::SeparatorText(tr("Screens"));
-    // Drag its bottom edge to see more screens at once. The list rereads assets/ui every second
+    // Header: "Screens" with a new-screen button at its end
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", tr("Screens"));
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight()));
+    if (iconButton(icon::kAdd, tr("New screen (assets/ui/<name>.ui)"))) {
+        m_newScreen.clear();
+        m_newScreenOpen = true;
+    }
+    // Filter once there are more screens than fit (FuseTag has dozens)
+    if (m_files.size() > 8 || !m_screenFilter.empty()) {
+        ImGui::SetNextItemWidth(-1.0f);
+        uiInputText("##screenFilter", tr("Filter screens"), m_screenFilter);
+    }
+    // Drag its bottom edge to see more screens at once. The list rereads assets/ui every second. Right-click: open, reveal, copy path
     if (ImGui::BeginChild("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(6.0f, static_cast<f32>(m_files.size()) + 0.5f)),
                           ImGuiChildFlags_ResizeY | ImGuiChildFlags_FrameStyle)) {
         for (size_t i = 0; i < m_files.size(); ++i) {
             const bool current = m_selected == static_cast<int>(i);
             std::string label = m_files[i];
             if (label.size() > 3 && label.compare(label.size() - 3, 3, ".ui") == 0) label.resize(label.size() - 3);
+            if (!current && fuzzyScore(label, m_screenFilter) < 0) continue;
             if (current && dirty()) label += "  *";
             if (ImGui::Selectable((label + "##" + m_files[i]).c_str(), current) && !current) {
                 if (dirty()) {
                     m_pendingScreen = static_cast<int>(i); // ask first (drawSavePrompt)
                 } else {
                     m_selected = static_cast<int>(i);
-                    m_zoom = 0.0f;
-                    m_pan[0] = m_pan[1] = 0.0f;
+                    zoomFit();
                     openSelected();
                 }
+            }
+            if (ImGui::BeginPopupContextItem()) {
+                drawScreenMenu(m_files[i]);
+                ImGui::EndPopup();
             }
         }
     }
     ImGui::EndChild();
     if (!m_screen) return;
     ImGui::SeparatorText(tr("Layers"));
+    ImGui::SetNextItemWidth(-1.0f);
+    uiInputText("##layerFilter", tr("Find layer (name or kind)"), m_layerFilter);
     ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, ImGui::GetFontSize() * 0.9f);
     if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, -1.0f)))
         if (ui::SourceNode* board = ui::findNode(m_source, {})) drawTree(*board, {});
     ImGui::EndChild();
     ImGui::PopStyleVar();
+}
+
+// New screen: a name (letters, digits, _ -) → assets/ui/<name>.ui with an empty 1920x1080 board, then opened
+void UiPanel::drawNewScreen() {
+    if (m_newScreenOpen) {
+        ImGui::OpenPopup("##newScreen");
+        m_newScreenOpen = false;
+    }
+    if (!ImGui::BeginPopup("##newScreen")) return;
+    ImGui::TextUnformatted(tr("New screen"));
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    const bool enter = uiInputText("##newScreenName", tr("name (assets/ui/<name>.ui)"), m_newScreen, ImGuiInputTextFlags_EnterReturnsTrue);
+    bool valid = !m_newScreen.empty();
+    for (char c : m_newScreen) valid = valid && (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
+    const std::string dir = findAsset("assets/ui");
+    const std::string file = dir + "/" + m_newScreen + ".ui";
+    const bool exists = valid && !dir.empty() && fileExists(file);
+    if (!m_newScreen.empty() && !valid) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("Letters, digits, _ and - only"));
+    if (exists) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("A screen with this name exists"));
+    ImGui::BeginDisabled(!valid || exists || dir.empty());
+    if (ImGui::Button(tr("Create")) || (enter && valid && !exists && !dir.empty())) {
+        const std::string text = "# MealKit UI (hand-written): " + m_newScreen + "\n@format ui 1\nboard " + m_newScreen + " 1920 1080\n";
+        if (writeTextFile(file, text)) {
+            MEALKIT_INFO("UI: new screen %s", file.c_str());
+            if (!dirty()) select(m_newScreen + ".ui"); // with unsaved edits the new screen just appears in the list
+            ImGui::CloseCurrentPopup();
+        } else {
+            MEALKIT_ERROR("UI: cannot write %s", file.c_str());
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Cancel")) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+void UiPanel::drawScreenMenu(const std::string& file) {
+    const std::string assetPath = "ui/" + file;
+    if (ImGui::MenuItem(tr("Open in code editor"))) openInCodeEditor(assetPath, 1);
+    if (ImGui::MenuItem(tr("Show in Explorer"))) openInExplorer(findAsset("assets/ui"));
+    if (ImGui::MenuItem(tr("Copy path"))) ImGui::SetClipboardText(assetPath.c_str());
+}
+
+void UiPanel::openInCodeEditor(const std::string& assetPath, int line) {
+    const std::string file = findAssetFile(assetPath);
+    if (file.empty()) return;
+    editor::openInCodeEditor(m_codeEditor ? *m_codeEditor : std::string(), file, line);
 }
 
 void UiPanel::drawRightColumn() {
@@ -495,8 +661,10 @@ void UiPanel::drawRightColumn() {
 void UiPanel::render(render::Renderer& renderer, f64 dt) {
     if (!m_ready) {
         m_ui.init(&renderer, &m_strings);
+        m_ui.setScale(m_scale);
         m_ready = true;
     }
+    if (m_selected >= 0 && !m_screen && m_path.empty()) openSelected(); // the screen kept from the last session (setProject)
     if (m_strings.language().empty()) m_strings.load(m_defaultLanguage, m_defaultLanguage);
     m_strings.update(dt);
     m_refreshTimer += dt;
@@ -518,7 +686,7 @@ void UiPanel::render(render::Renderer& renderer, f64 dt) {
     if (!m_screen) return;
     // Fit mode: the whole board (or its width) inside the canvas with a thin margin; above 100% only whole multiples, so text stays
     // sharp. Otherwise the chosen zoom, moved by the pan
-    const Resolution& r = kResolutions[m_resolution];
+    const Size r = resolution();
     constexpr f32 kMargin = 12.0f;
     const f32 vw = std::max(1.0f, m_canvas.width - kMargin * 2.0f), vh = std::max(1.0f, m_canvas.height - kMargin * 2.0f);
     f32 k = m_zoom;

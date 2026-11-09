@@ -96,6 +96,18 @@ bool UiPanel::pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool ove
     m_boxes = m_ui.boxes(m_screen);
     const f32 lx = (x - m_originX) / m_scaleK, ly = (y - m_originY) / m_scaleK;
     m_hoverHandle = m_drag == Drag::None && !overUi ? handleAt(x, y) : m_dragHandle;
+    // Hover outline: the topmost box under the mouse (a hovered layer row sets it instead)
+    if (!m_treeHovered) {
+        m_hasHover = false;
+        u32 depth = 0;
+        if (!overUi && m_drag == Drag::None)
+            for (const ui::NodeBox& b : m_boxes)
+                if (b.visible && b.node < m_map.size() && !m_map[b.node].empty() && lx >= b.x && ly >= b.y && lx < b.x + b.w && ly < b.y + b.h && (!m_hasHover || b.depth >= depth)) {
+                    m_hover = m_map[b.node];
+                    m_hasHover = true;
+                    depth = b.depth;
+                }
+    }
 
     if (pressed && !overUi) {
         if (const u32 h = handleAt(x, y)) {
@@ -291,11 +303,30 @@ void UiPanel::finishReorder() {
 }
 
 void UiPanel::drawOverlay() {
-    if (!editing() || !m_screen || !m_hasSelection) return;
+    if (!editing() || !m_screen) return;
     ImDrawList* draw = ImGui::GetBackgroundDrawList(); // over the scene view, under the editor windows
     auto px = [this](f32 lx, f32 ly) { return ImVec2(m_originX + lx * m_scaleK, m_originY + ly * m_scaleK); };
     const ImU32 blue = IM_COL32(80, 170, 255, 255);
+    // A small name tag at a box corner (above it when there is room, else inside)
+    auto tag = [draw](ImVec2 at, const std::string& text, ImU32 bg, bool below) {
+        const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+        const ImVec2 pad(4.0f, 1.0f);
+        const ImVec2 a(at.x, below ? at.y + 3.0f : at.y - size.y - pad.y * 2.0f - 3.0f);
+        draw->AddRectFilled(a, ImVec2(a.x + size.x + pad.x * 2.0f, a.y + size.y + pad.y * 2.0f), bg, 3.0f);
+        draw->AddText(ImVec2(a.x + pad.x, a.y + pad.y), IM_COL32(255, 255, 255, 255), text.c_str());
+    };
+    auto nameOf = [this](const ui::SourcePath& path) {
+        const ui::SourceNode* n = ui::findNode(m_source, path);
+        return !n ? std::string() : n->name.empty() ? n->kind : n->name;
+    };
     ui::NodeBox b;
+    // Hover: thin outline and the name, unless it is the selection or a drag is on
+    if (m_hasHover && m_drag == Drag::None && (!m_hasSelection || m_hover != m_selection) && boxOf(m_hover, b)) {
+        const ImVec2 a = px(b.x, b.y), c = px(b.x + b.w, b.y + b.h);
+        draw->AddRect(a, c, IM_COL32(80, 170, 255, 170), 0.0f, 0, 1.0f);
+        tag(a, nameOf(m_hover), IM_COL32(40, 90, 150, 220), a.y - m_canvas.y < ImGui::GetTextLineHeight() + 6.0f);
+    }
+    if (!m_hasSelection) return;
     if (boxOf(m_selection, b)) {
         const ImVec2 a = px(b.x, b.y), c = px(b.x + b.w, b.y + b.h);
         // Padding (numbers only; $tokens aren't resolved here): tinted band inside the box
@@ -323,6 +354,11 @@ void UiPanel::drawOverlay() {
             }
         }
         draw->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(c.x + 1, c.y + 1), blue, 0.0f, 0, 2.0f);
+        // Name and size under the box (inside its bottom when the canvas ends there)
+        char size[48];
+        std::snprintf(size, sizeof size, "  %.0f x %.0f", static_cast<double>(b.w), static_cast<double>(b.h));
+        const bool room = m_canvas.y + m_canvas.height - c.y > ImGui::GetTextLineHeight() + kHandle + 8.0f;
+        tag(ImVec2(a.x, room ? c.y + kHandle : c.y - ImGui::GetTextLineHeight() - 8.0f), nameOf(m_selection) + size, IM_COL32(40, 120, 220, 235), true);
         // Handles on free nodes (resize); nodes in a layout show none (they reorder)
         if (!m_selection.empty() && layoutOf(m_selection).empty())
             for (u32 h : {kLeft | kTop, kTop, kRight | kTop, kRight, kRight | kBottom, kBottom, kLeft | kBottom, kLeft}) {

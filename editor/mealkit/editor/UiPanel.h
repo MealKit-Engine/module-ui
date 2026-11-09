@@ -20,6 +20,8 @@
 namespace mealkit::editor {
 
 void toolbarGap(f32 width); // workspace toolbar: next group on this row, or on a new one when less than width is left
+// A text field on a std::string with a grey hint while empty (filters, rename). true when the text changed (or Enter with EnterReturnsTrue)
+bool uiInputText(const char* id, const char* hint, std::string& text, int flags = 0);
 
 class UiPanel {
 public:
@@ -35,6 +37,16 @@ public:
     bool maximized() const { return m_maximized; }
     void toggleMaximized() { m_maximized = !m_maximized; }
     void toggleColumns(); // Ctrl+\: hide both side columns (canvas only), or show them again
+    // Canvas view (editor commands Shift+0 / Shift+1 / Shift+2 and F)
+    void zoomActual();     // 100%, board centered
+    void zoomFit();        // the whole board in view
+    void frameSelection(); // zoom so the selected box fills most of the canvas (fit when nothing is selected)
+    // Code editor from the editor's preferences (empty = VS Code), for "Open in code editor"
+    void setCodeEditor(const std::string* editor) { m_codeEditor = editor; }
+    // Workspace state kept across restarts in build\editor\panels.txt: screen, resolution, language, scale, columns.
+    // loadState takes "ui.<key>" lines before setProject, which applies them
+    void saveState(std::string& text) const;
+    bool loadState(const std::string& key, const std::string& value);
     void select(const std::string& uiFile); // automated tests: "hud.ui"
     void refresh();                         // reread the assets/ui file list
     void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot plugin install address (import server)
@@ -75,6 +87,13 @@ public:
     void collectBindingProblems(std::vector<std::string>& out) const;
 
 private:
+    struct Size {
+        f32 w, h;
+    };
+    Size resolution() const; // logical board size (preset or custom)
+    void handleKeys();       // workspace shortcuts while it has keyboard focus (nudge, parent/child, reorder, rename)
+    void nudge(f32 dx, f32 dy);
+    void moveInOrder(int step); // among siblings (Alt+arrows)
     void openSelected();
     void bindViewModel();
     std::string valuesFile(const reflect::TypeInfo& type) const; // art/ui/samples/<screen>.<type>.values
@@ -98,6 +117,12 @@ private:
     void drawBindings(ui::SourceNode& node);
     const reflect::TypeInfo* bindingScope(const ui::SourcePath& path) const; // view model type a node's fields are read from (element type inside a list)
     void drawSavePrompt();
+    void drawNewScreen(); // [+] in the screens header: name → assets/ui/<name>.ui with an empty board
+    void drawScreenMenu(const std::string& file);
+    void openInCodeEditor(const std::string& assetPath, int line);
+    int nodeLine(const ui::SourcePath& path) const; // line of the node's head in the saved file (1 when not found)
+    bool treeMatches(const ui::SourceNode& node) const; // node or a descendant matches the layer filter
+    void collectNodeProblems();                         // m_nodeProblems for the tree badges (bindings against the preview view model)
     bool insertNode(ui::SourceNode node);
     enum class Drag : u8 { None, Move, Resize, Reorder };
     bool boxOf(const ui::SourcePath& path, ui::NodeBox& out) const; // first visible box of a node (last layout)
@@ -116,7 +141,8 @@ private:
     loc::Strings m_strings;
     bool m_ready = false;
     ui::ScreenId m_screen = ui::kNoScreen;
-    int m_resolution = 0;
+    int m_resolution = 0;           // index in the preset list; one past the end = custom
+    i32 m_customRes[2] = {1600, 900};
     f32 m_scale = 1.0f;
     std::string m_language, m_defaultLanguage = "ko";
     bool m_showFocus = false;
@@ -125,6 +151,17 @@ private:
     reflect::Instance m_vm;
     f64 m_refreshTimer = 0.0;
     std::string m_penpotUrl;
+    const std::string* m_codeEditor = nullptr;
+    std::string m_restoreScreen; // from panels.txt, opened by setProject
+    std::string m_screenFilter, m_layerFilter, m_newScreen;
+    bool m_newScreenOpen = false;
+    // Layers: rename in place (F2, double-click), hover (canvas or tree row) outlined on the canvas, binding problems per node
+    bool m_renaming = false, m_renameFocus = false;
+    ui::SourcePath m_renamePath;
+    std::string m_renameText;
+    bool m_hasHover = false, m_treeHovered = false;
+    ui::SourcePath m_hover;
+    std::vector<std::pair<ui::SourcePath, std::string>> m_nodeProblems;
 
     // Editing
     bool m_editing = true, m_editable = false; // the workspace always edits; m_editable false for Penpot exports and unreadable files

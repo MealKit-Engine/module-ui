@@ -1,6 +1,7 @@
 // [UI] panel editing: source, selection, node tree, properties, history (UiPanel.h). Drawing the preview is in UiPanel.cpp
 #include "mealkit/core/Log.h"
 #include "mealkit/editor/FieldEditor.h"
+#include "mealkit/editor/FuzzyMatch.h"
 #include "mealkit/editor/ImGuiLayer.h"
 #include "mealkit/editor/Strings.h"
 #include "mealkit/editor/UiPanel.h"
@@ -23,6 +24,21 @@ constexpr const char* kProperties[] = {
     "underline", "strike", "transform", "visible", "disabled", "widthRatio", "colorField", "button", "toggle", "slider",
     "select", "scroll", "list", "textInput", "placeholder", "maxLength", "focusUp", "focusDown", "focusLeft",
     "focusRight", "on", "transition", "set", "id"};
+// Board-only keys (also known, so their lines aren't marked)
+constexpr const char* kBoardProperties[] = {"navigation", "firstFocus", "back"};
+
+bool knownProperty(const std::string& key) {
+    for (const char* k : kProperties)
+        if (key == k) return true;
+    for (const char* k : kBoardProperties)
+        if (key == k) return true;
+    return false;
+}
+
+// Value lists for the inspector's combos (mkui Document.cpp applyProperty)
+constexpr const char* kJustify[] = {"start", "center", "end", "space-between", "space-around", "space-evenly"};
+constexpr const char* kAlign[] = {"start", "center", "end", "stretch"};
+constexpr const char* kTextAlign[] = {"left", "center", "right"};
 
 // View model fields by path ("a.b": struct fields), as the runtime names them
 const reflect::FieldInfo* fieldAt(const reflect::TypeInfo* type, const std::string& path) {
@@ -80,18 +96,24 @@ std::vector<std::string> textFields(const std::string& text) {
     return out;
 }
 
-// Walks a node and its children with the fields in scope and reports names that don't exist
-void checkBindings(const ui::SourceNode& node, const reflect::TypeInfo* scope, const std::string& where, std::vector<std::string>& out) {
+// Walks a node and its children with the fields in scope and reports names that don't exist: "where: problem" lines in out,
+// and (when nodes is given) each node's path with its problem for the layer badges
+void checkBindings(const ui::SourceNode& node, const reflect::TypeInfo* scope, const std::string& where, std::vector<std::string>& out,
+                   const ui::SourcePath& path = {}, std::vector<std::pair<ui::SourcePath, std::string>>* nodes = nullptr) {
     std::string value;
     const std::string at = where + (node.name.empty() ? node.kind : node.name);
+    auto report = [&](const std::string& problem) {
+        out.push_back(at + ": " + problem);
+        if (nodes) nodes->push_back({path, problem});
+    };
     for (const BindingKey& b : kBindings) {
         if (!ui::getProperty(node, b.key, value) || value.empty()) continue;
         const std::string name = b.negatable && value[0] == '!' ? value.substr(1) : value;
-        if (!fieldAt(scope, name)) out.push_back(at + ": " + b.key + " " + value);
+        if (!fieldAt(scope, name)) report(std::string(b.key) + " " + value);
     }
     if (ui::getProperty(node, "content", value))
         for (const std::string& name : textFields(value))
-            if (!fieldAt(scope, name)) out.push_back(at + ": {" + name + "}");
+            if (!fieldAt(scope, name)) report("{" + name + "}");
     if (node.kind == "use") return; // the component file has its own view model paths
     const reflect::TypeInfo* inner = scope;
     if (ui::getProperty(node, "list", value)) {
@@ -99,7 +121,11 @@ void checkBindings(const ui::SourceNode& node, const reflect::TypeInfo* scope, c
         if (!f || !isList(*f)) return; // already reported; names inside can't be checked
         inner = f->value->element->type;
     }
-    for (const ui::SourceNode& child : node.children) checkBindings(child, inner, at + " > ", out);
+    for (u32 c = 0; c < node.children.size(); ++c) {
+        ui::SourcePath child = path;
+        child.push_back(c);
+        checkBindings(node.children[c], inner, at + " > ", out, child, nodes);
+    }
 }
 
 std::vector<f32> numbers(const std::string& value) {
@@ -175,13 +201,14 @@ constexpr const char* kRedoGlyph = "\xEE\x9E\xA6";  // U+E7A6
 constexpr const char* kWrapGlyph = "\xEE\xA2\xB3";  // U+E8B3 select all (a frame around)
 constexpr const char* kPasteGlyph = "\xEE\x9D\xBF"; // U+E77F
 constexpr const char* kHelpGlyph = "\xEE\xA2\x97";  // U+E897
+constexpr const char* kCodeGlyph = "\xEE\xA5\x83";  // U+E943 code
 
 } // namespace
 
 void UiPanel::loadSource() {
     m_source = {};
     m_editable = false;
-    m_hasSelection = false;
+    m_hasSelection = m_hasHover = m_renaming = false;
     m_undo.clear();
     m_redo.clear();
     m_live = m_committed = m_saved = {};
@@ -439,6 +466,8 @@ void UiPanel::drawEditToolbar() {
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
         ImGui::TextUnformatted(tr("Click the preview to select (Ctrl+click: the box beneath), drag to move or reorder, handles resize (Ctrl: no snapping). Ctrl+S saves."));
         ImGui::TextUnformatted(tr("Wheel zooms around the mouse, middle or right drag moves the view. Right-click a layer or the selection for more."));
+        ImGui::TextUnformatted(tr("Arrows move by 1 (Shift: 10), Alt+arrows change the order, Esc selects the parent, Enter the first child, F2 renames."));
+        ImGui::TextUnformatted(tr("F or Shift+2 zooms to the selection, Shift+1 fits the screen, Shift+0 is 100%."));
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
@@ -477,28 +506,71 @@ void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
     if (ImGui::MenuItem(tr("Delete"), "Del", false, node)) deleteSelected();
 }
 
-// One layer row: kind glyph, name (the kind when unnamed), the kind dimmed at the end; right-click for the node menu
+// One layer row: kind glyph, name (the kind when unnamed), a red ! for binding problems; right-click for the node menu,
+// F2 or double-click renames in place, hovering outlines the node on the canvas. The filter keeps matches and their ancestors
 void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth |
-                               ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_FramePadding;
+    if (!treeMatches(node)) return;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
+                               ImGuiTreeNodeFlags_FramePadding;
     if (node.children.empty() || node.kind == "use") flags |= ImGuiTreeNodeFlags_Leaf;
     if (m_hasSelection && m_selection == path) flags |= ImGuiTreeNodeFlags_Selected;
-    if (m_hasSelection && isUnder(m_selection, path) && m_selection != path) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    if ((m_hasSelection && isUnder(m_selection, path) && m_selection != path) || !m_layerFilter.empty()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     ImGui::PushID(static_cast<int>(path.empty() ? -1 : static_cast<int>(path.back())));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 2.0f));
-    const std::string label = std::string(kindGlyph(node.kind)) + "  " + (node.name.empty() ? node.kind : node.name);
+    const bool renaming = m_renaming && m_renamePath == path;
+    const std::string label = std::string(kindGlyph(node.kind)) + "  " + (renaming ? std::string() : node.name.empty() ? node.kind : node.name);
     const bool open = ImGui::TreeNodeEx("##node", flags, "%s", label.c_str());
     ImGui::PopStyleVar();
-    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-        m_selection = path;
-        m_hasSelection = true;
+    const ImVec2 rowMax = ImGui::GetItemRectMax();
+    if (!renaming) {
+        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+            m_selection = path;
+            m_hasSelection = true;
+        }
+        if (m_editable && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
+            m_renaming = m_renameFocus = true;
+            m_renamePath = path;
+            m_renameText = node.name;
+        }
+        if (m_editable && ImGui::BeginPopupContextItem("##nodeMenu")) {
+            drawNodeMenu(path);
+            ImGui::EndPopup();
+        }
+        if (ImGui::IsItemHovered()) {
+            m_hover = path;
+            m_hasHover = m_treeHovered = true;
+        }
     }
-    if (m_editable && ImGui::BeginPopupContextItem("##nodeMenu")) {
-        drawNodeMenu(path);
-        ImGui::EndPopup();
+    // Binding problems: a red ! at the row's end, the problems in its tooltip
+    std::string problems;
+    for (const auto& [at, problem] : m_nodeProblems)
+        if (at == path) problems += (problems.empty() ? "" : "\n") + problem;
+    if (!problems.empty()) {
+        ImGui::GetWindowDrawList()->AddText(ImVec2(rowMax.x - ImGui::GetFontSize(), rowMax.y - ImGui::GetTextLineHeight() - 2.0f), IM_COL32(255, 96, 96, 255), "!");
     }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) // the glyph says the kind; the tooltip spells it (and a component's file)
-        ImGui::SetTooltip("%s", node.kind == "use" ? (node.kind + " " + node.args).c_str() : node.kind.c_str());
+    if (!renaming && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) { // the glyph says the kind; the tooltip spells it (and a component's file)
+        std::string tip = node.kind == "use" ? node.kind + " " + node.args : node.kind;
+        if (!problems.empty()) tip += "\n" + trf("No such field: %s", problems.c_str());
+        ImGui::SetTooltip("%s", tip.c_str());
+    }
+    if (renaming) { // the name field over the row, after the glyph; Enter or a click elsewhere keeps it, Esc cancels
+        ImGui::SameLine(ImGui::GetItemRectMin().x - ImGui::GetWindowPos().x + ImGui::GetTreeNodeToLabelSpacing() + ImGui::GetFontSize() * 1.6f);
+        ImGui::SetNextItemWidth(-1.0f);
+        if (m_renameFocus) {
+            ImGui::SetKeyboardFocusHere();
+            m_renameFocus = false;
+        }
+        const bool enter = uiInputText("##rename", "", m_renameText, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        if (enter || ImGui::IsItemDeactivated()) {
+            std::string name;
+            for (char c : m_renameText) name += c == ' ' ? '_' : c; // a name is one word on the head line
+            if (!ImGui::IsKeyPressed(ImGuiKey_Escape) && !name.empty() && name != node.name) {
+                node.name = ui::uniqueName(m_source, name);
+                syncSource();
+            }
+            m_renaming = false;
+        }
+    }
     if (open) {
         if (node.kind != "use")
             for (u32 c = 0; c < node.children.size(); ++c) {
@@ -517,8 +589,10 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
     ImGui::TextUnformatted(kindGlyph(node.kind));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", node.kind.c_str());
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::SetNextItemWidth(-ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x);
     inputString("##name", node.name);
+    ImGui::SameLine();
+    if (iconButton(kCodeGlyph, tr("Open this node in the code editor"))) openInCodeEditor(m_path, nodeLine(m_selection));
     if (node.kind == "use") {
         ImGui::SetNextItemWidth(-1.0f);
         inputString("##component", node.args);
@@ -543,6 +617,94 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
             if (ImGui::DragFloat2(propertyRow(tr("Size")).c_str(), v, 1.0f, 0.0f, 100000.0f, "%.0f")) ui::setProperty(node, "size", number(v[0]) + " " + number(v[1]));
         }
     }
+    // Where the layout put it (read-only): what the game draws at the chosen resolution
+    if (ui::NodeBox drawn; boxOf(m_selection, drawn)) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", trf("Drawn at %.0f, %.0f  size %.0f x %.0f", drawn.x, drawn.y, drawn.w, drawn.h).c_str());
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Result of the layout at the canvas resolution (logical units)"));
+    }
+
+    // A number property: a drag box when the value is numbers (count = how many), the raw text dimmed when it is a $token or a word
+    auto numberRow = [&](const char* label, const char* key, f32 fallback, f32 speed, f32 lo, f32 hi, const char* format) {
+        std::string v;
+        const bool has = ui::getProperty(node, key, v);
+        std::vector<f32> n = has ? numbers(v) : std::vector<f32>{fallback};
+        if (n.size() != 1) {
+            ImGui::TextDisabled("%s  %s %s", label, key, v.c_str());
+            return;
+        }
+        if (ImGui::DragFloat(propertyRow(label).c_str(), &n[0], speed, lo, hi, format, ImGuiSliderFlags_AlwaysClamp)) ui::setProperty(node, key, number(n[0]));
+    };
+    // A word property from a list; (default) removes the line
+    auto comboRow = [&](const char* label, const char* key, const char* const* options, size_t count) {
+        std::string v;
+        const bool has = ui::getProperty(node, key, v);
+        if (beginCombo(propertyRow(label).c_str(), has ? v.c_str() : tr("(default)"))) {
+            if (ImGui::Selectable(tr("(default)"), !has)) ui::removeProperty(node, key);
+            for (size_t i = 0; i < count; ++i)
+                if (ImGui::Selectable(options[i], has && v == options[i])) ui::setProperty(node, key, options[i]);
+            ImGui::EndCombo();
+        }
+    };
+
+    // Children's layout (frames and the board): kind, then the flex/grid settings that go with it
+    if (node.kind == "frame" || node.kind == "board") {
+        std::string layout;
+        const bool hasLayout = ui::getProperty(node, "layout", layout);
+        const std::vector<std::string> parts = [&] {
+            std::vector<std::string> w;
+            size_t a = 0;
+            while ((a = layout.find_first_not_of(' ', a)) != std::string::npos) {
+                const size_t b = layout.find(' ', a);
+                w.push_back(layout.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                a = b;
+            }
+            return w;
+        }();
+        const std::string kind = parts.empty() ? std::string() : parts[0];
+        const char* kinds[] = {"row", "column", "grid"};
+        if (beginCombo(propertyRow(tr("Children"), tr("How the children are placed (layout). Free: each by its own pos")).c_str(),
+                       hasLayout ? kind.c_str() : tr("free (pos)"))) {
+            if (ImGui::Selectable(tr("free (pos)"), !hasLayout)) ui::removeProperty(node, "layout");
+            for (const char* k : kinds)
+                if (ImGui::Selectable(k, kind == k)) {
+                    // row <-> column keeps reverse/wrap; grid starts plain
+                    std::string line = k;
+                    if (std::string(k) != "grid" && kind != "grid")
+                        for (size_t i = 1; i < parts.size(); ++i) line += " " + parts[i];
+                    ui::setProperty(node, "layout", line);
+                }
+            ImGui::EndCombo();
+        }
+        if (hasLayout && kind != "grid") {
+            bool wrap = std::find(parts.begin(), parts.end(), "wrap") != parts.end();
+            if (ImGui::Checkbox(tr("Wrap"), &wrap)) {
+                std::string line = kind;
+                for (size_t i = 1; i < parts.size(); ++i)
+                    if (parts[i] != "wrap") line += " " + parts[i];
+                ui::setProperty(node, "layout", wrap ? line + " wrap" : line);
+            }
+        }
+        if (hasLayout) {
+            comboRow(tr("Justify"), "justify", kJustify, std::size(kJustify));
+            comboRow(tr("Align"), "align", kAlign, std::size(kAlign));
+            numberRow(tr("Gap"), "gap", 0.0f, 0.5f, 0.0f, 10000.0f, "%.0f");
+        }
+        // Padding: one number for all sides, or top right bottom left
+        std::string pad;
+        std::vector<f32> p = ui::getProperty(node, "padding", pad) ? numbers(pad) : std::vector<f32>{0.0f};
+        if (p.size() == 2) p = {p[0], p[1], p[0], p[1]};
+        if (p.size() == 1) p = {p[0], p[0], p[0], p[0]};
+        if (p.size() == 4) {
+            if (ImGui::DragFloat4(propertyRow(tr("Padding"), tr("top, right, bottom, left")).c_str(), p.data(), 0.5f, 0.0f, 10000.0f, "%.0f")) {
+                const bool same = p[0] == p[1] && p[1] == p[2] && p[2] == p[3];
+                ui::setProperty(node, "padding", same ? number(p[0]) : number(p[0]) + " " + number(p[1]) + " " + number(p[2]) + " " + number(p[3]));
+            }
+        } else {
+            ImGui::TextDisabled("%s  padding %s", tr("Padding"), pad.c_str());
+        }
+    }
+
     bool styleHeader = false;
     for (const char* key : {"fill", "color"}) {
         std::string probe;
@@ -556,6 +718,26 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
             const std::string label = std::string(key == std::string("fill") ? tr("Fill") : tr("Text color")) + "##" + key;
             if (colorEdit(propertyRow(label.c_str()).c_str(), rgba, true)) ui::setProperty(node, key, hex(rgba, value.size() == 9 || rgba[3] < 1.0f));
         }
+    }
+    if (node.kind != "board") {
+        if (!styleHeader) ImGui::SeparatorText(tr("Style"));
+        if (node.kind == "frame" || node.kind == "image") numberRow(tr("Corner radius"), "radius", 0.0f, 0.5f, 0.0f, 10000.0f, "%.0f");
+        numberRow(tr("Opacity"), "opacity", 1.0f, 0.01f, 0.0f, 1.0f, "%.2f");
+    }
+
+    // Text: the content on several lines, size and alignment
+    if (node.kind == "text") {
+        ImGui::SeparatorText(tr("Text"));
+        std::string content;
+        if (ui::getProperty(node, "content", content)) {
+            ImGui::TextDisabled("%s", tr("Content ({field} inserts a view model value)"));
+            ImGui::SetNextItemWidth(-1.0f);
+            if (inputString("##content", content)) ui::setProperty(node, "content", content);
+        } else if (ui::getProperty(node, "key", content)) {
+            ImGui::TextDisabled("%s", trf("Translated text: key %s", content.c_str()).c_str());
+        }
+        numberRow(tr("Font size"), "fontSize", 24.0f, 0.25f, 1.0f, 1000.0f, "%.0f");
+        comboRow(tr("Text align"), "textAlign", kTextAlign, std::size(kTextAlign));
     }
 
     ImGui::SeparatorText(tr("State"));
@@ -576,8 +758,16 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
         if (item.line[0] == '#') {
             ImGui::TextDisabled("%s", item.line.c_str());
         } else {
+            // A key mkui doesn't know (typo) is red; the file's problems say more
+            const std::string key = item.line.substr(0, item.line.find(' '));
+            const bool unknown = !knownProperty(key);
+            if (unknown) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
             ImGui::SetNextItemWidth(-28.0f);
             inputString("##line", item.line);
+            if (unknown) {
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", trf("Unknown property '%s'", key.c_str()).c_str());
+            }
             ImGui::SameLine();
             if (ImGui::SmallButton("x")) {
                 node.items.erase(node.items.begin() + static_cast<std::ptrdiff_t>(i));
@@ -656,6 +846,100 @@ const reflect::TypeInfo* UiPanel::bindingScope(const ui::SourcePath& path) const
 void UiPanel::collectBindingProblems(std::vector<std::string>& out) const {
     if (!m_vmType || m_path.empty()) return;
     if (const ui::SourceNode* board = ui::findNode(m_source, {})) checkBindings(*board, m_vmType, m_path + ": ", out);
+}
+
+void UiPanel::collectNodeProblems() {
+    m_nodeProblems.clear();
+    if (!m_vmType || !m_editable) return;
+    std::vector<std::string> lines;
+    if (const ui::SourceNode* board = ui::findNode(m_source, {})) checkBindings(*board, m_vmType, {}, lines, {}, &m_nodeProblems);
+}
+
+bool UiPanel::treeMatches(const ui::SourceNode& node) const {
+    if (m_layerFilter.empty() || fuzzyScore(node.name, m_layerFilter) >= 0 || fuzzyScore(node.kind, m_layerFilter) >= 0) return true;
+    if (node.kind == "use") return false;
+    for (const ui::SourceNode& child : node.children)
+        if (treeMatches(child)) return true;
+    return false;
+}
+
+int UiPanel::nodeLine(const ui::SourcePath& path) const {
+    std::string text;
+    const std::string file = findAssetFile(m_path);
+    if (file.empty() || !readTextFile(file, text)) return 1;
+    // The nearest named node on the path (names are unique in a screen): its head line "<kind> <name> ..."
+    for (size_t depth = path.size() + 1; depth-- > 0;) {
+        const ui::SourceNode* n = ui::findNode(m_source, ui::SourcePath(path.begin(), path.begin() + static_cast<std::ptrdiff_t>(depth)));
+        if (!n || n->name.empty()) continue;
+        const std::string head = n->kind + " " + n->name;
+        int line = 1;
+        for (size_t start = 0; start < text.size(); ++line) {
+            size_t end = text.find('\n', start);
+            if (end == std::string::npos) end = text.size();
+            const size_t first = text.find_first_not_of(" \t", start);
+            if (first != std::string::npos && first < end && text.compare(first, head.size(), head) == 0 &&
+                (first + head.size() >= end || text[first + head.size()] == ' ' || text[first + head.size()] == '\r'))
+                return line;
+            start = end + 1;
+        }
+    }
+    return 1;
+}
+
+void UiPanel::handleKeys() {
+    if (!editing() || !m_screen || m_renaming) return;
+    if (!m_hasSelection) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
+        if (const ui::SourceNode* n = ui::findNode(m_source, m_selection)) {
+            m_renaming = m_renameFocus = true;
+            m_renamePath = m_selection;
+            m_renameText = n->name;
+        }
+        return;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) { // up one level; from the board, nothing
+        if (m_selection.empty()) m_hasSelection = false;
+        else m_selection.pop_back();
+        return;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) { // down to the first child
+        const ui::SourceNode* n = ui::findNode(m_source, m_selection);
+        if (n && n->kind != "use" && !n->children.empty()) m_selection.push_back(0);
+        return;
+    }
+    if (io.KeyCtrl) return;
+    const int dx = (ImGui::IsKeyPressed(ImGuiKey_RightArrow) ? 1 : 0) - (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) ? 1 : 0);
+    const int dy = (ImGui::IsKeyPressed(ImGuiKey_DownArrow) ? 1 : 0) - (ImGui::IsKeyPressed(ImGuiKey_UpArrow) ? 1 : 0);
+    if (!dx && !dy) return;
+    if (io.KeyAlt) moveInOrder(dx + dy > 0 ? 1 : -1);
+    else nudge(static_cast<f32>(dx) * (io.KeyShift ? 10.0f : 1.0f), static_cast<f32>(dy) * (io.KeyShift ? 10.0f : 1.0f));
+}
+
+// Arrow keys: a free node's pos by whole units (nodes a layout places don't move; $token positions aren't touched)
+void UiPanel::nudge(f32 dx, f32 dy) {
+    if (m_selection.empty() || !layoutOf(m_selection).empty()) return;
+    ui::SourceNode* n = ui::findNode(m_source, m_selection);
+    if (!n) return;
+    std::string value;
+    const std::vector<f32> pos = ui::getProperty(*n, "pos", value) ? numbers(value) : std::vector<f32>{0.0f, 0.0f};
+    if (pos.size() != 2) return;
+    ui::setProperty(*n, "pos", number(pos[0] + dx) + " " + number(pos[1] + dy));
+    syncSource();
+}
+
+// Alt+arrows: one place earlier or later among the siblings (the order a layout places them in, or drawing order for free nodes)
+void UiPanel::moveInOrder(int step) {
+    if (m_selection.empty()) return;
+    const ui::SourcePath parent(m_selection.begin(), m_selection.end() - 1);
+    const ui::SourceNode* pn = ui::findNode(m_source, parent);
+    const int to = static_cast<int>(m_selection.back()) + step;
+    if (!pn || to < 0 || to >= static_cast<int>(pn->children.size())) return;
+    ui::SourcePath moved;
+    if (ui::moveNode(m_source, m_selection, parent, static_cast<u32>(to), &moved)) {
+        m_selection = moved;
+        syncSource();
+    }
 }
 
 void UiPanel::drawBindings(ui::SourceNode& node) {
