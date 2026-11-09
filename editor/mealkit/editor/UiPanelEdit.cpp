@@ -525,21 +525,27 @@ void UiPanel::drawEditToolbar() {
 }
 
 void UiPanel::drawAddMenu() {
-    if (ImGui::MenuItem((std::string(kindGlyph("frame")) + "  " + tr("Frame")).c_str())) addNew("frame");
-    if (ImGui::MenuItem((std::string(kindGlyph("text")) + "  " + tr("Text")).c_str())) addNew("text");
-    if (ImGui::MenuItem((std::string(kindGlyph("image")) + "  " + tr("Image")).c_str())) addNew("image");
+    ImGui::TextDisabled("%s", tr("Widgets"));
+    drawLibraryMenu();
+    ImGui::Separator();
+    ImGui::TextDisabled("%s", tr("Plain nodes"));
+    if (ImGui::MenuItem((std::string(kindGlyph("frame")) + "  " + tr("Frame")).c_str())) defer([this] { addNew("frame"); });
+    if (ImGui::MenuItem((std::string(kindGlyph("text")) + "  " + tr("Text")).c_str())) defer([this] { addNew("text"); });
+    if (ImGui::MenuItem((std::string(kindGlyph("image")) + "  " + tr("Image")).c_str())) defer([this] { addNew("image"); });
     if (ImGui::BeginMenu((std::string(kindGlyph("use")) + "  " + tr("Component")).c_str())) {
         bool any = false;
         for (const std::string& f : m_files)
             if ("ui/" + f != m_path) {
                 any = true;
-                if (ImGui::MenuItem(f.c_str())) addNew("use", "ui/" + f);
+                if (ImGui::MenuItem(f.c_str())) defer([this, f] { addNew("use", "ui/" + f); });
             }
         if (!any) ImGui::TextDisabled("%s", tr("No other screens"));
         ImGui::EndMenu();
     }
 }
 
+// Menu items change the tree after it is drawn (defer): this menu opens from a layer row inside drawTree, and removing or adding
+// nodes there would pull the tree out from under the loop (a crash: Add > Image, then Delete from the row menu)
 void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
     m_selection = path;
     m_hasSelection = true;
@@ -549,10 +555,10 @@ void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    if (ImGui::MenuItem(tr("Duplicate"), "Ctrl+D", false, node)) duplicateSelected();
+    if (ImGui::MenuItem(tr("Duplicate"), "Ctrl+D", false, node)) defer([this] { duplicateSelected(); });
     if (ImGui::MenuItem(tr("Copy"), "Ctrl+C", false, node)) copySelected();
-    if (ImGui::MenuItem(tr("Paste"), "Ctrl+V")) paste();
-    if (ImGui::MenuItem(tr("Wrap in frame"), nullptr, false, node)) wrapSelected();
+    if (ImGui::MenuItem(tr("Paste"), "Ctrl+V")) defer([this] { paste(); });
+    if (ImGui::MenuItem(tr("Wrap in frame"), nullptr, false, node)) defer([this] { wrapSelected(); });
     const ui::SourceNode* picked = ui::findNode(m_source, path);
     if (ImGui::MenuItem(tr("Make component..."), nullptr, false, node && picked && picked->kind == "frame")) {
         m_componentName = picked->name;
@@ -561,7 +567,7 @@ void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
     if (ImGui::MenuItem(tr("Edit component"), nullptr, false, canEditComponent())) editComponent();
     ImGui::Separator();
     if (ImGui::MenuItem(tr("Copy style"), "Ctrl+Alt+C")) copyStyle();
-    if (ImGui::MenuItem(tr("Paste style"), "Ctrl+Alt+V", false, !m_styleClipboard.empty())) pasteStyle();
+    if (ImGui::MenuItem(tr("Paste style"), "Ctrl+Alt+V", false, !m_styleClipboard.empty())) defer([this] { pasteStyle(); });
     if (const ui::SourceNode* n = ui::findNode(m_source, path); n && !n->name.empty()) {
         const bool hidden = std::find(m_hiddenNodes.begin(), m_hiddenNodes.end(), n->name) != m_hiddenNodes.end();
         const bool locked = std::find(m_lockedNodes.begin(), m_lockedNodes.end(), n->name) != m_lockedNodes.end();
@@ -572,7 +578,7 @@ void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
         if (ImGui::MenuItem(tr("Lock (the canvas doesn't pick it)"), nullptr, locked)) toggleName(m_lockedNodes, n->name);
     }
     ImGui::Separator();
-    if (ImGui::MenuItem(tr("Delete"), "Del", false, node)) deleteSelected();
+    if (ImGui::MenuItem(tr("Delete"), "Del", false, node)) defer([this] { deleteSelected(); });
 }
 
 // One layer row: kind glyph, name (the kind when unnamed), marks at its end (red ! binding problems, a link for bound nodes, eye and
@@ -652,6 +658,15 @@ void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
                     }
                     m_dragNode = false;
                 }
+            }
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MK_UI_WIDGET")) { // from the library: into a frame, else after the row
+                const int index = *static_cast<const int*>(p->Data);
+                const ui::SourcePath at = path;
+                defer([this, index, at] {
+                    m_selection = at;
+                    m_hasSelection = true;
+                    insertWidget(index, nullptr, nullptr);
+                });
             }
             if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MK_UI_FIELD", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
                 if (p->IsDelivery()) {
@@ -776,13 +791,8 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
         if (pos.size() == 2 && ImGui::DragFloat2(propertyRow(tr("Position")).c_str(), pos.data(), 1.0f, 0.0f, 0.0f, "%.0f"))
             ui::setProperty(node, "pos", number(pos[0]) + " " + number(pos[1]));
     }
-    if (ui::getProperty(node, "size", value)) {
-        const std::vector<f32> size = numbers(value);
-        if (size.size() == 2) {
-            f32 v[2] = {size[0], size[1]};
-            if (ImGui::DragFloat2(propertyRow(tr("Size")).c_str(), v, 1.0f, 0.0f, 100000.0f, "%.0f")) ui::setProperty(node, "size", number(v[0]) + " " + number(v[1]));
-        }
-    }
+    drawSizeRows(node);
+    if (!placedByLayout) drawAnchors(node);
     // Where the layout put it (read-only): what the game draws at the chosen resolution
     if (ui::NodeBox drawn; boxOf(m_selection, drawn)) {
         ImGui::AlignTextToFramePadding();
@@ -918,8 +928,15 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
             ImGui::TextDisabled("%s", trf("Translated text: key %s", content.c_str()).c_str());
         }
         numberRow(tr("Font size"), "fontSize", 24.0f, 0.25f, 1.0f, 1000.0f, "%.0f");
+        drawFontRow(node);
         comboRow(tr("Text align"), "textAlign", kTextAlign, std::size(kTextAlign));
     }
+
+    if (node.kind == "image") {
+        ImGui::SeparatorText(tr("Image"));
+        drawImageRow(node);
+    }
+    drawBehaviour(node);
 
     ImGui::SeparatorText(tr("State"));
     const char* const states[] = {tr("Normal"), tr("Hover"), tr("Pressed"), tr("Focus"), tr("Disabled"), tr("Checked")};

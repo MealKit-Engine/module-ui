@@ -6,6 +6,7 @@
 #include "mealkit/ui/Document.h"
 #include "mealkit/ui/Ui.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,10 @@ public:
     // (the component file is written at once, the screen edit is unsaved like any edit). editComponent opens the selected use's
     // file in the workspace with a way back to this screen (the screen shows the saved component again)
     bool makeComponent(const std::string& name);
+    // Library widgets (UiPanelLibrary.cpp): parent nullptr inserts like Add, pos is a point inside parent for free layouts
+    static int widgetCount();
+    static const char* widgetCommand(int index); // "Add UI Button": the editor adds one palette command per widget
+    bool insertWidget(int index, const ui::SourcePath* parent, const f32* pos);
     bool canEditComponent() const; // the selection is a use of a file in the screens list
     void editComponent();
     // Mouse over the canvas every frame (screen pixels): press selects the topmost box (ctrl: the one beneath), dragging the
@@ -134,6 +139,18 @@ private:
     const reflect::TypeInfo* bindingScope(const ui::SourcePath& path) const; // view model type a node's fields are read from (element type inside a list)
     void drawSavePrompt();
     void drawMakeComponent(); // name popup for makeComponent
+    // Library and inspector rows for people new to the workspace (UiPanelLibrary.cpp)
+    void drawLibrary();      // left column: ready-made widgets to click or drag in
+    void drawLibraryMenu();  // the same widgets in the Add menu
+    void dropWidgetOnCanvas(int index, f32 lx, f32 ly);
+    void drawSizeRows(ui::SourceNode& node);  // width/height: fixed, fit content, fill
+    void drawAnchors(ui::SourceNode& node);   // constraints as a 3x3 grid and two stretch combos
+    void drawImageRow(ui::SourceNode& node);  // src picker
+    void drawFontRow(ui::SourceNode& node);   // font picker, text color
+    void drawBehaviour(ui::SourceNode& node); // widget kind and its action/field
+    void drawEmptyGuide();                    // steps over an empty screen, placeholders for images without a file
+    std::vector<std::string> m_imageFiles, m_fontFiles;
+    f64 m_imageFilesTime = 0.0, m_fontFilesTime = 0.0;
     void openFile(const std::string& file); // a screens list entry, asking to save first
     void drawNewScreen(); // [+] in the screens header: name → assets/ui/<name>.ui with an empty board
     void drawScreenMenu(const std::string& file);
@@ -163,6 +180,9 @@ private:
     void notice(const std::string& text); // a line in the canvas path strip for a few seconds (and the log)
     void finishCapture();         // crops the captured back buffer to the board and saves art/ui/captures/<screen>.png
     bool insertNode(ui::SourceNode node);
+    // Tree edits asked for while the tree or a menu is being drawn run at the start of the next drawWorkspace
+    void defer(std::function<void()> action) { m_deferred.push_back(std::move(action)); }
+    std::vector<std::function<void()>> m_deferred;
     enum class Drag : u8 { None, Move, Resize, Reorder };
     bool boxOf(const ui::SourcePath& path, ui::NodeBox& out) const; // first visible box of a node (last layout)
     std::string layoutOf(const ui::SourcePath& path) const;          // parent's layout if it places this node, else empty

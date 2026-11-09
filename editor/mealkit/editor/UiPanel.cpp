@@ -232,6 +232,11 @@ void UiPanel::drawWorkspace() {
     if (m_files.empty()) refresh();
     // Keys go to the workspace while it (or one of its columns) has focus and no text field is being typed in
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive()) handleKeys();
+    if (!m_deferred.empty()) { // menu actions from the last frame (drawNodeMenu)
+        std::vector<std::function<void()>> actions;
+        actions.swap(m_deferred);
+        for (const std::function<void()>& a : actions) a();
+    }
     collectNodeProblems();
     m_treeHovered = false;
     const ImVec2 areaPos = ImGui::GetCursorScreenPos(), areaSize = ImGui::GetContentRegionAvail();
@@ -297,6 +302,10 @@ void UiPanel::drawWorkspace() {
         ImGui::Dummy(ImVec2(colWidth, canvasHeight));
         // A view model field dropped on the canvas binds the topmost box under the mouse
         if (editing() && ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MK_UI_WIDGET"); p && m_scaleK > 0.0f) { // from the library
+                const ImVec2 mouse = ImGui::GetMousePos();
+                dropWidgetOnCanvas(*static_cast<const int*>(p->Data), (mouse.x - m_originX) / m_scaleK, (mouse.y - m_originY) / m_scaleK);
+            }
             if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MK_UI_FIELD"); p && m_scaleK > 0.0f) {
                 const ImVec2 mouse = ImGui::GetMousePos();
                 const f32 lx = (mouse.x - m_originX) / m_scaleK, ly = (mouse.y - m_originY) / m_scaleK;
@@ -311,6 +320,7 @@ void UiPanel::drawWorkspace() {
             }
             ImGui::EndDragDropTarget();
         }
+        drawEmptyGuide();
         if (!m_screen) {
             const char* hint = m_files.empty() ? tr("No .ui files in assets/ui.") : tr("Pick a screen on the left.");
             const ImVec2 size = ImGui::CalcTextSize(hint);
@@ -571,6 +581,7 @@ void UiPanel::drawLeftColumn() {
     }
     ImGui::EndChild();
     if (!m_screen) return;
+    drawLibrary();      // ready-made widgets
     drawFieldList(); // the preview view model's fields, to drag onto layers
     ImGui::SeparatorText(tr("Layers"));
     // Filter, then expand all / collapse all at its end
