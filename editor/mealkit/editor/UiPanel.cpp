@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <imgui.h>
 
@@ -128,7 +129,7 @@ std::string UiPanel::valuesFile(const reflect::TypeInfo& type) const {
     if (m_selected < 0 || m_selected >= static_cast<int>(m_files.size())) return {};
     std::string screen = m_files[static_cast<size_t>(m_selected)];
     if (const size_t dot = screen.rfind('.'); dot != std::string::npos) screen.resize(dot);
-    return projectRoot() + "/art/ui/samples/" + screen + "." + type.name + ".values";
+    return projectRoot() + "/art/ui/samples/" + screen + "." + type.name + (m_preset.empty() ? "" : "." + m_preset) + ".values";
 }
 
 void UiPanel::loadValues() {
@@ -173,6 +174,10 @@ void UiPanel::openSelected() {
     if (m_screen) m_ui.close(m_screen);
     m_screen = ui::kNoScreen;
     m_path.clear();
+    m_hiddenNodes.clear(); // editor-only hide/lock and the value set belong to one screen
+    m_lockedNodes.clear();
+    m_preset.clear();
+    m_actionLog.clear();
     if (m_selected >= 0 && m_selected < static_cast<int>(m_files.size())) {
         m_path = "ui/" + m_files[static_cast<size_t>(m_selected)];
         m_screen = m_ui.open(m_path);
@@ -243,6 +248,7 @@ void UiPanel::drawWorkspace() {
     ImGui::SetCursorScreenPos(ImVec2(areaPos.x, rowBottom));
     drawSavePrompt();
     drawNewScreen();
+    drawScreenTools();
 
     // Ctrl+\ and the toolbar hide the side columns (as in Figma): a hidden one leaves a thin strip that peeks it in a popup
     const ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoPadOuterX |
@@ -282,6 +288,22 @@ void UiPanel::drawWorkspace() {
         m_canvasHovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(ImVec2(colPos.x, canvasTop), ImVec2(colPos.x + colWidth, canvasTop + canvasHeight));
         ImGui::SetCursorScreenPos(ImVec2(colPos.x, canvasTop));
         ImGui::Dummy(ImVec2(colWidth, canvasHeight));
+        // A view model field dropped on the canvas binds the topmost box under the mouse
+        if (editing() && ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MK_UI_FIELD"); p && m_scaleK > 0.0f) {
+                const ImVec2 mouse = ImGui::GetMousePos();
+                const f32 lx = (mouse.x - m_originX) / m_scaleK, ly = (mouse.y - m_originY) / m_scaleK;
+                const ui::NodeBox* best = nullptr;
+                for (const ui::NodeBox& b : m_boxes)
+                    if (b.visible && b.node < m_map.size() && lx >= b.x && ly >= b.y && lx < b.x + b.w && ly < b.y + b.h && (!best || b.depth >= best->depth)) best = &b;
+                if (best) {
+                    m_bindQueued = true;
+                    m_bindPath = m_map[best->node];
+                    m_bindField = static_cast<const char*>(p->Data);
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
         if (!m_screen) {
             const char* hint = m_files.empty() ? tr("No .ui files in assets/ui.") : tr("Pick a screen on the left.");
             const ImVec2 size = ImGui::CalcTextSize(hint);
@@ -307,6 +329,10 @@ void UiPanel::drawWorkspace() {
         ImGui::EndTable();
     }
     if (m_screen && m_editable) syncSource();
+    if (m_bindQueued) { // a field dropped on a layer row or the canvas
+        m_bindQueued = false;
+        bindField(m_bindPath, m_bindField);
+    }
     drawOverlay();
 }
 
@@ -379,6 +405,16 @@ void UiPanel::handleCanvasView() {
 void UiPanel::drawBreadcrumb() {
     if (!m_screen) return;
     ImGui::AlignTextToFramePadding();
+    if (!m_notice.empty() && ImGui::GetTime() - m_noticeTime < 4.0) { // a recent notice (saved, reloaded, bound ...)
+        ImGui::TextColored(ImVec4(0.55f, 0.8f, 1.0f, 1.0f), "%s", m_notice.c_str());
+        return;
+    }
+    if (m_interact) { // interact mode: the actions the screen sent, newest last
+        std::string log;
+        for (const std::string& a : m_actionLog) log += (log.empty() ? "" : ",  ") + a;
+        ImGui::TextDisabled("%s", log.empty() ? tr("Interact: click the screen like a player. Actions it sends appear here.") : trf("Actions: %s", log.c_str()).c_str());
+        return;
+    }
     if (!m_hasSelection) {
         ImGui::TextDisabled("%s", tr("Click a box to select it, Ctrl+click for the one beneath. Wheel zooms, middle or right drag moves the view."));
         return;
@@ -445,6 +481,17 @@ void UiPanel::drawCanvasBar() {
         m_showFocus = !m_showFocus;
         m_ui.setFocusVisible(m_showFocus);
     }
+    ImGui::SameLine();
+    const bool guides = m_showLayout || m_showSafeArea || m_showRulers || m_showGrid || m_ui.pseudoText();
+    if (iconButton("\xEE\xA2\x90", tr("View: outlines, safe area, rulers, grid, pseudo-localization"), guides)) ImGui::OpenPopup("##viewMenu"); // U+E890 view
+    if (ImGui::BeginPopup("##viewMenu")) {
+        drawViewMenu();
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!m_screen || m_captureStep != 0);
+    if (iconButton("\xEE\x9C\xA2", tr("Save the screen as a PNG (art/ui/captures)"))) m_captureStep = 1; // U+E722 camera
+    ImGui::EndDisabled();
 
     // Zoom at the right end: - 75% + Fit
     const f32 k = m_view.width > 0.0f ? m_view.width / resolution().w : 1.0f;
@@ -516,14 +563,33 @@ void UiPanel::drawLeftColumn() {
     }
     ImGui::EndChild();
     if (!m_screen) return;
+    drawFieldList(); // the preview view model's fields, to drag onto layers
     ImGui::SeparatorText(tr("Layers"));
-    ImGui::SetNextItemWidth(-1.0f);
+    // Filter, then expand all / collapse all at its end
+    const f32 button = ImGui::GetFrameHeight();
+    ImGui::SetNextItemWidth(-(button + 2.0f) * 2.0f);
     uiInputText("##layerFilter", tr("Find layer (name or kind)"), m_layerFilter);
+    ImGui::SameLine(0.0f, 2.0f);
+    if (iconButton("\xEE\x9C\x8D", tr("Expand all"))) m_openAll = 1; // U+E70D chevron down
+    ImGui::SameLine(0.0f, 2.0f);
+    if (iconButton("\xEE\x9C\x8E", tr("Collapse all"))) m_openAll = -1; // U+E70E chevron up
     ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, ImGui::GetFontSize() * 0.9f);
     if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, -1.0f)))
         if (ui::SourceNode* board = ui::findNode(m_source, {})) drawTree(*board, {});
     ImGui::EndChild();
     ImGui::PopStyleVar();
+    m_openAll = 0;
+    if (!ImGui::GetDragDropPayload()) m_dragNode = false;
+    // Edits found while drawing the tree (a row dropped on another, a field dropped on a row)
+    if (m_moveQueued) {
+        m_moveQueued = false;
+        ui::SourcePath moved;
+        if (ui::moveNode(m_source, m_moveFrom, m_moveParent, m_moveAt, &moved)) {
+            m_selection = moved;
+            m_hasSelection = true;
+            syncSource();
+        }
+    }
 }
 
 // New screen: a name (letters, digits, _ -) → assets/ui/<name>.ui with an empty 1920x1080 board, then opened
@@ -566,6 +632,9 @@ void UiPanel::drawScreenMenu(const std::string& file) {
     if (ImGui::MenuItem(tr("Open in code editor"))) openInCodeEditor(assetPath, 1);
     if (ImGui::MenuItem(tr("Show in Explorer"))) openInExplorer(findAsset("assets/ui"));
     if (ImGui::MenuItem(tr("Copy path"))) ImGui::SetClipboardText(assetPath.c_str());
+    ImGui::Separator();
+    if (ImGui::MenuItem(tr("Duplicate"))) duplicateScreen(file);
+    if (ImGui::MenuItem(tr("Rename..."))) startScreenRename(file);
 }
 
 void UiPanel::openInCodeEditor(const std::string& assetPath, int line) {
@@ -617,9 +686,43 @@ void UiPanel::drawRightColumn() {
         }
         if (!m_viewModels) ImGui::TextDisabled("%s", tr("View models appear when the game code is loaded."));
         if (m_vmType) {
+            // Value sets: art/ui/samples/<screen>.<Type>[.<set>].values (empty, full, long names ...)
+            std::vector<std::string> sets{std::string()};
+            if (m_selected >= 0 && m_selected < static_cast<int>(m_files.size())) {
+                std::string screen = m_files[static_cast<size_t>(m_selected)];
+                screen.resize(screen.size() - 3);
+                const std::string prefix = screen + "." + m_vmType->name + ".";
+                for (const std::string& f : listFiles(projectRoot() + "/art/ui/samples", ".values"))
+                    if (f.rfind(prefix, 0) == 0 && f.size() > prefix.size() + 7) sets.push_back(f.substr(prefix.size(), f.size() - prefix.size() - 7));
+            }
+            if (beginCombo(propertyRow(tr("Value set"), tr("Saved sets of preview values for this screen")).c_str(), m_preset.empty() ? tr("(default)") : m_preset.c_str())) {
+                for (const std::string& set : sets)
+                    if (ImGui::Selectable(set.empty() ? tr("(default)") : set.c_str(), set == m_preset)) {
+                        m_preset = set;
+                        m_vm = reflect::Instance(*m_vmType);
+                        std::string error;
+                        if (!reflect::loadTextFile(*m_vmType, m_vm.data(), valuesFile(*m_vmType), kValuesFormat, &error) && !set.empty())
+                            MEALKIT_WARN("UI preview: %s", error.c_str());
+                        bindViewModel();
+                    }
+                ImGui::EndCombo();
+            }
             drawFields(*m_vmType, m_vm.data());
             if (ImGui::SmallButton(tr("Save values"))) saveValues();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Kept in art/ui/samples, loaded with this screen."));
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
+            const bool enter = uiInputText("##newSet", tr("new set name"), m_newPreset, ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            bool validSet = !m_newPreset.empty();
+            for (char c : m_newPreset) validSet = validSet && (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
+            ImGui::BeginDisabled(!validSet);
+            if (ImGui::SmallButton(tr("Save as")) || (enter && validSet)) {
+                m_preset = m_newPreset;
+                m_newPreset.clear();
+                if (saveValues()) notice(trf("Value set '%s' saved", m_preset.c_str()));
+            }
+            ImGui::EndDisabled();
         }
     }
     if (m_screen && sectionHeader(tr("Focus"))) {
@@ -634,15 +737,23 @@ void UiPanel::drawRightColumn() {
     }
     if (m_screen) {
         const ui::ScreenInfo info = m_ui.info(m_screen);
+        // Text that doesn't fit its box (cut by maxLines/ellipsis or larger than the box) at this resolution, language and scale
+        std::vector<std::string> overflow;
+        for (const ui::NodeBox& b : m_boxes)
+            if (b.overflow && std::find(overflow.begin(), overflow.end(), b.name) == overflow.end()) overflow.push_back(b.name.empty() ? std::string("text") : b.name);
         // Problems open by themselves when there are any
-        const std::string title = info.errors.empty() ? std::string(tr("Problems")) : trf("Problems (%zu)", info.errors.size());
-        if (sectionHeader((title + "###problems").c_str(), info.errors.empty() ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
+        const size_t count = info.errors.size() + overflow.size();
+        const std::string title = count == 0 ? std::string(tr("Problems")) : trf("Problems (%zu)", count);
+        if (sectionHeader((title + "###problems").c_str(), count == 0 ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (const std::string& name : overflow) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", trf("Text doesn't fit: %s", name.c_str()).c_str());
             ImGui::TextDisabled("%s", info.exported ? tr("Exported from Penpot (do not edit by hand)") : tr("Hand-written"));
             ImGui::Text("%s", trf("Nodes: %u (budget %u)", info.nodes, kNodeBudget).c_str());
+            ImGui::TextDisabled("%s", trf("%u quads, layout and drawing %.2f ms", m_ui.quadCount(), m_layoutMs).c_str());
             if (info.nodes > kNodeBudget) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("Over the node budget"));
-            if (info.errors.empty()) ImGui::TextDisabled("%s", tr("No problems"));
+            if (count == 0) ImGui::TextDisabled("%s", tr("No problems"));
             for (const std::string& e : info.errors) ImGui::TextWrapped("%s", e.c_str());
         }
+        drawThemeSection();
     }
     // Penpot plugin: paste this address into Penpot's plugin manager (Ctrl+Alt+P). Changes every time the editor starts
     if (sectionHeader("Penpot")) {
@@ -673,7 +784,27 @@ void UiPanel::render(render::Renderer& renderer, f64 dt) {
         refresh();
         // The file changed outside the editor (text editor, Penpot export) while nothing is unsaved here: read it again
         if (!m_path.empty() && !dirty())
-            if (const std::string file = findAssetFile(m_path); !file.empty() && fileWriteTime(file) != m_fileTime) loadSource();
+            if (const std::string file = findAssetFile(m_path); !file.empty() && fileWriteTime(file) != m_fileTime) {
+                loadSource();
+                MEALKIT_INFO("UI: %s changed outside the editor, reloaded", m_path.c_str());
+                notice(trf("%s changed outside the editor: reloaded", m_path.c_str()));
+            }
+    }
+    // Theme tokens and their use counts are read again every few seconds (another screen may start using one)
+    m_themeTimer += dt;
+    if (m_themeTimer > 3.0 && !m_themeDirty) {
+        m_themeTimer = 0.0;
+        m_tokens.clear();
+        m_themeText.clear();
+    }
+    // Capture: step 1 hid the overlay this frame, so the back buffer at this endFrame has the board alone; step 2 crops it next frame
+    if (m_captureStep == 2) {
+        finishCapture();
+        m_captureStep = 0;
+    } else if (m_captureStep == 1 && m_screen) {
+        createDirectories(projectRoot() + "/build/editor");
+        renderer.requestCapture((projectRoot() + "/build/editor/ui_capture.png").c_str());
+        m_captureStep = 2;
     }
     // Backdrop over the whole workspace: the 3D scene on the back buffer must not show through the canvas or between the columns
     render::UiQuad backdrop;
@@ -715,8 +846,23 @@ void UiPanel::render(render::Renderer& renderer, f64 dt) {
         for (size_t i = 0; i < m_map.size() && previewNode < 0; ++i)
             if (m_map[i] == m_selection) previewNode = static_cast<i32>(i);
     m_ui.setPreviewState(m_screen, previewNode, static_cast<mkui::State>(m_previewState));
-    m_ui.update({}, view, dt);
+    // Interact mode: the mouse goes to the screen like in the game (hover, press, sliders); the actions are listed
+    ui::FrameInput input;
+    if (m_interact && m_input) {
+        input.input = m_input;
+        input.mouseAllowed = m_canvasHovered;
+        input.keyboardAllowed = false;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    m_ui.update(input, view, dt);
     m_ui.render(renderer);
+    m_layoutMs = m_layoutMs * 0.9 + std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start).count() * 0.1;
+    if (m_interact)
+        for (const ui::Action& a : m_ui.actions()) {
+            m_actionLog.push_back(a.name);
+            if (m_actionLog.size() > 8) m_actionLog.erase(m_actionLog.begin());
+            MEALKIT_INFO("UI interact: %s", a.name.c_str());
+        }
     if (!m_testDragNode.empty()) { // --ui-drag: after the first layout
         const std::string node = m_testDragNode;
         m_testDragNode.clear();

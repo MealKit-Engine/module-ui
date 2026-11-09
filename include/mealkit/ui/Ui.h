@@ -107,6 +107,12 @@ public:
     void moveFocus(ScreenId screen, int direction); // editor: one ui.* move (0 up, 1 down, 2 left, 3 right)
     void setFocusVisible(bool always); // preview: always show the focus indicator
     u32 quadCount() const;             // rectangle count of the last render
+    // Editor preview: string table text lengthened by about 40%, accented and bracketed ("[Sett~ ~~]" style) to find text that won't fit
+    // translations (pseudo-localization). Rereads the open screens
+    void setPseudoText(bool on);
+    bool pseudoText() const;
+    std::vector<ScreenId> screens() const;          // open screens (editor: the game's screens while playing)
+    reflect::View viewModel(ScreenId screen) const; // the view model bound to a screen (empty if none)
     // For widget interaction tests: as if pressed, by node name (automated tests/preview)
     bool press(ScreenId screen, const std::string& nodeName);
     // Finds and presses a widget with this name from the top of the open screens (automated tests --ui-press)

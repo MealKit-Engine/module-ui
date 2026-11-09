@@ -202,6 +202,13 @@ constexpr const char* kWrapGlyph = "\xEE\xA2\xB3";  // U+E8B3 select all (a fram
 constexpr const char* kPasteGlyph = "\xEE\x9D\xBF"; // U+E77F
 constexpr const char* kHelpGlyph = "\xEE\xA2\x97";  // U+E897
 constexpr const char* kCodeGlyph = "\xEE\xA5\x83";  // U+E943 code
+constexpr const char* kEyeGlyph = "\xEE\x9E\xB3";   // U+E7B3 visible
+constexpr const char* kHiddenGlyph = "\xEE\xB4\x9A"; // U+ED1A hidden
+constexpr const char* kLockGlyph = "\xEE\x9C\xAE";  // U+E72E lock
+constexpr const char* kBoundGlyph = "\xEE\x9C\x9B"; // U+E71B link (bound to the view model)
+constexpr const char* kHistoryGlyph = "\xEE\xA0\x9C"; // U+E81C history
+constexpr const char* kChangesGlyph = "\xEE\xA2\xA5"; // U+E8A5 document (the changed lines)
+constexpr const char* kInteractGlyph = "\xEE\x9F\x89"; // U+E7C9 touch pointer
 
 } // namespace
 
@@ -235,7 +242,7 @@ void UiPanel::syncSource() {
     const std::string text = ui::writeSource(m_source);
     if (text != m_live || m_map.empty()) {
         m_live = text;
-        if (m_screen) m_ui.setDraft(m_screen, m_live == m_saved ? nullptr : &m_live);
+        refreshDraft();
         ui::Document doc;
         ui::parseDocument(m_live, m_path, doc); // only the node structure is needed (no theme)
         m_map = ui::mapDocumentNodes(m_source, doc);
@@ -289,7 +296,7 @@ bool UiPanel::save() {
     }
     m_saved = m_live;
     m_fileTime = fileWriteTime(file);
-    if (m_screen) m_ui.setDraft(m_screen, nullptr);
+    refreshDraft();
     MEALKIT_INFO("UI edit: saved %s", m_path.c_str());
     return true;
 }
@@ -437,6 +444,22 @@ void UiPanel::drawEditToolbar() {
     ImGui::BeginDisabled(m_redo.empty());
     if (iconButton(kRedoGlyph, tr("Redo (Ctrl+Y)"))) redo();
     ImGui::EndDisabled();
+    ImGui::SameLine(0.0f, 2.0f);
+    ImGui::BeginDisabled(m_undo.empty() && m_redo.empty());
+    if (iconButton(kHistoryGlyph, tr("History: go back to a step"))) ImGui::OpenPopup("##uiHistory");
+    ImGui::EndDisabled();
+    if (ImGui::BeginPopup("##uiHistory")) {
+        drawHistoryMenu();
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine(0.0f, 2.0f);
+    ImGui::BeginDisabled(!dirty());
+    if (iconButton(kChangesGlyph, tr("Unsaved changes: the lines against the file"))) ImGui::OpenPopup("##uiChanges");
+    ImGui::EndDisabled();
+    if (ImGui::BeginPopup("##uiChanges")) {
+        drawChanges();
+        ImGui::EndPopup();
+    }
 
     toolbarGap(ImGui::GetFontSize() * 5.0f);
     if (ImGui::Button((std::string(icon::kAdd) + "  " + tr("Add")).c_str())) ImGui::OpenPopup("##addMenu");
@@ -458,6 +481,13 @@ void UiPanel::drawEditToolbar() {
     ImGui::SameLine(0.0f, 2.0f);
     if (iconButton(kPasteGlyph, tr("Paste (Ctrl+V)"))) paste();
 
+    toolbarGap(ImGui::GetFrameHeight() * 2.0f);
+    if (iconButton(kInteractGlyph, tr("Interact: use the screen like the game (buttons, sliders) and list the actions it sends"), m_interact)) {
+        m_interact = !m_interact;
+        m_actionLog.clear();
+        m_drag = Drag::None;
+    }
+
     ImGui::SameLine(0.0f, ImGui::GetFontSize());
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("%s", kHelpGlyph);
@@ -468,6 +498,7 @@ void UiPanel::drawEditToolbar() {
         ImGui::TextUnformatted(tr("Wheel zooms around the mouse, middle or right drag moves the view. Right-click a layer or the selection for more."));
         ImGui::TextUnformatted(tr("Arrows move by 1 (Shift: 10), Alt+arrows change the order, Esc selects the parent, Enter the first child, F2 renames."));
         ImGui::TextUnformatted(tr("F or Shift+2 zooms to the selection, Shift+1 fits the screen, Shift+0 is 100%."));
+        ImGui::TextUnformatted(tr("Alt shows the distances from the selection to the box under the mouse. Ctrl+Alt+C / Ctrl+Alt+V copy and paste a style."));
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
@@ -503,25 +534,46 @@ void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
     if (ImGui::MenuItem(tr("Paste"), "Ctrl+V")) paste();
     if (ImGui::MenuItem(tr("Wrap in frame"), nullptr, false, node)) wrapSelected();
     ImGui::Separator();
+    if (ImGui::MenuItem(tr("Copy style"), "Ctrl+Alt+C")) copyStyle();
+    if (ImGui::MenuItem(tr("Paste style"), "Ctrl+Alt+V", false, !m_styleClipboard.empty())) pasteStyle();
+    if (const ui::SourceNode* n = ui::findNode(m_source, path); n && !n->name.empty()) {
+        const bool hidden = std::find(m_hiddenNodes.begin(), m_hiddenNodes.end(), n->name) != m_hiddenNodes.end();
+        const bool locked = std::find(m_lockedNodes.begin(), m_lockedNodes.end(), n->name) != m_lockedNodes.end();
+        if (ImGui::MenuItem(tr("Hide in the editor"), nullptr, hidden)) {
+            toggleName(m_hiddenNodes, n->name);
+            refreshDraft();
+        }
+        if (ImGui::MenuItem(tr("Lock (the canvas doesn't pick it)"), nullptr, locked)) toggleName(m_lockedNodes, n->name);
+    }
+    ImGui::Separator();
     if (ImGui::MenuItem(tr("Delete"), "Del", false, node)) deleteSelected();
 }
 
-// One layer row: kind glyph, name (the kind when unnamed), a red ! for binding problems; right-click for the node menu,
-// F2 or double-click renames in place, hovering outlines the node on the canvas. The filter keeps matches and their ancestors
+// One layer row: kind glyph, name (the kind when unnamed), marks at its end (red ! binding problems, a link for bound nodes, eye and
+// lock while hovered or set); right-click for the node menu, F2 or double-click renames in place, hovering outlines the node on the
+// canvas, dragging moves it (above/below a row: before/after it, the middle of a frame: into it), a dropped view model field binds it.
+// The filter keeps matches and their ancestors
 void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
     if (!treeMatches(node)) return;
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
-                               ImGuiTreeNodeFlags_FramePadding;
+                               ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_AllowOverlap;
     if (node.children.empty() || node.kind == "use") flags |= ImGuiTreeNodeFlags_Leaf;
     if (m_hasSelection && m_selection == path) flags |= ImGuiTreeNodeFlags_Selected;
     if ((m_hasSelection && isUnder(m_selection, path) && m_selection != path) || !m_layerFilter.empty()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    else if (m_openAll != 0) ImGui::SetNextItemOpen(m_openAll > 0, ImGuiCond_Always);
     ImGui::PushID(static_cast<int>(path.empty() ? -1 : static_cast<int>(path.back())));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 2.0f));
     const bool renaming = m_renaming && m_renamePath == path;
+    std::string value;
+    const bool fileHidden = ui::getProperty(node, "hidden", value);
+    const bool hiddenHere = editorHidden(path), lockedHere = editorLocked(path);
+    if (fileHidden || hiddenHere) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     const std::string label = std::string(kindGlyph(node.kind)) + "  " + (renaming ? std::string() : node.name.empty() ? node.kind : node.name);
     const bool open = ImGui::TreeNodeEx("##node", flags, "%s", label.c_str());
+    if (fileHidden || hiddenHere) ImGui::PopStyleColor();
     ImGui::PopStyleVar();
-    const ImVec2 rowMax = ImGui::GetItemRectMax();
+    const ImVec2 rowMin = ImGui::GetItemRectMin(), rowMax = ImGui::GetItemRectMax();
+    const bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     if (!renaming) {
         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
             m_selection = path;
@@ -536,26 +588,105 @@ void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
             drawNodeMenu(path);
             ImGui::EndPopup();
         }
-        if (ImGui::IsItemHovered()) {
+        if (rowHovered) {
             m_hover = path;
             m_hasHover = m_treeHovered = true;
         }
+        // Drag a row onto another to move it
+        if (m_editable && !path.empty() && ImGui::BeginDragDropSource()) {
+            m_dragNode = true;
+            m_dragFrom = path;
+            ImGui::SetDragDropPayload("MK_UI_NODE", nullptr, 0);
+            ImGui::TextUnformatted(label.c_str());
+            ImGui::EndDragDropSource();
+        }
+        if (m_editable && ImGui::BeginDragDropTarget()) {
+            const f32 y = ImGui::GetMousePos().y, h = rowMax.y - rowMin.y;
+            const bool container = node.kind == "frame" || node.kind == "board";
+            // Zone: top quarter before, bottom quarter after, middle into (frames), else the nearer half
+            int zone = container ? (y < rowMin.y + h * 0.25f ? -1 : y > rowMax.y - h * 0.25f ? 1 : 0) : (y < rowMin.y + h * 0.5f ? -1 : 1);
+            if (path.empty()) zone = 0; // the board: only into
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MK_UI_NODE", ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+                const ImU32 c = IM_COL32(255, 200, 60, 255);
+                if (zone == 0) draw->AddRect(rowMin, rowMax, c, 3.0f, 0, 2.0f);
+                else draw->AddLine(ImVec2(rowMin.x, zone < 0 ? rowMin.y : rowMax.y), ImVec2(rowMax.x, zone < 0 ? rowMin.y : rowMax.y), c, 2.0f);
+                if (p->IsDelivery() && m_dragNode && !isUnder(path, m_dragFrom)) {
+                    m_moveQueued = true;
+                    m_moveFrom = m_dragFrom;
+                    if (zone == 0) {
+                        m_moveParent = path;
+                        m_moveAt = static_cast<u32>(node.children.size()); // the end (clamped after the removal)
+                    } else {
+                        m_moveParent.assign(path.begin(), path.end() - 1);
+                        const bool sameParent = m_dragFrom.size() == path.size() && std::equal(m_moveParent.begin(), m_moveParent.end(), m_dragFrom.begin());
+                        u32 at = path.back() + (zone > 0 ? 1u : 0u);
+                        if (sameParent && m_dragFrom.back() < at) --at; // the removal shifts later siblings down
+                        m_moveAt = at;
+                    }
+                    m_dragNode = false;
+                }
+            }
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MK_UI_FIELD", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+                if (p->IsDelivery()) {
+                    m_bindQueued = true;
+                    m_bindPath = path;
+                    m_bindField = static_cast<const char*>(p->Data);
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
     }
-    // Binding problems: a red ! at the row's end, the problems in its tooltip
+    // Marks at the row's end, right to left: lock and eye (while hovered or set), binding problems (red !), bound (link)
     std::string problems;
     for (const auto& [at, problem] : m_nodeProblems)
         if (at == path) problems += (problems.empty() ? "" : "\n") + problem;
-    if (!problems.empty()) {
-        ImGui::GetWindowDrawList()->AddText(ImVec2(rowMax.x - ImGui::GetFontSize(), rowMax.y - ImGui::GetTextLineHeight() - 2.0f), IM_COL32(255, 96, 96, 255), "!");
+    const f32 glyph = ImGui::GetFontSize() * 1.1f;
+    f32 right = rowMax.x - 2.0f;
+    bool movedCursor = renaming;
+    if (!node.name.empty() && !renaming && (rowHovered || hiddenHere || lockedHere)) {
+        const bool ownLock = std::find(m_lockedNodes.begin(), m_lockedNodes.end(), node.name) != m_lockedNodes.end();
+        const bool ownHide = std::find(m_hiddenNodes.begin(), m_hiddenNodes.end(), node.name) != m_hiddenNodes.end();
+        movedCursor = true;
+        for (int i = 0; i < 2; ++i) {
+            right -= glyph;
+            ImGui::SetCursorScreenPos(ImVec2(right, rowMin.y));
+            const bool lock = i == 0;
+            const bool on = lock ? ownLock : ownHide;
+            ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(1.0f, 0.8f, 0.35f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
+            if (ImGui::SmallButton(lock ? (std::string(kLockGlyph) + "##lock").c_str() : (std::string(on ? kHiddenGlyph : kEyeGlyph) + "##eye").c_str())) {
+                toggleName(lock ? m_lockedNodes : m_hiddenNodes, node.name);
+                if (!lock) refreshDraft();
+            }
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(2);
+            ImGui::SetItemTooltip("%s", lock ? tr("Lock in the editor (the canvas doesn't pick it)") : tr("Hide in the editor (not saved)"));
+        }
     }
-    if (!renaming && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) { // the glyph says the kind; the tooltip spells it (and a component's file)
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const f32 textY = rowMin.y + (rowMax.y - rowMin.y - ImGui::GetTextLineHeight()) * 0.5f;
+    if (!problems.empty()) {
+        right -= glyph * 0.7f;
+        draw->AddText(ImVec2(right, textY), IM_COL32(255, 96, 96, 255), "!");
+    }
+    static const char* const kBindingKeys[] = {"visible", "disabled", "widthRatio", "colorField", "list", "button", "toggle", "slider", "select", "textInput"};
+    bool bound = ui::getProperty(node, "content", value) && value.find('{') != std::string::npos;
+    for (const char* k : kBindingKeys) bound = bound || ui::getProperty(node, k, value);
+    if (bound) {
+        right -= glyph;
+        draw->AddText(ImVec2(right, textY), ImGui::GetColorU32(ImGuiCol_TextDisabled), kBoundGlyph);
+    }
+    if (!renaming && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !ImGui::IsAnyItemActive()) {
         std::string tip = node.kind == "use" ? node.kind + " " + node.args : node.kind;
+        if (fileHidden) tip += std::string("\n") + tr("hidden in the file");
         if (!problems.empty()) tip += "\n" + trf("No such field: %s", problems.c_str());
         ImGui::SetTooltip("%s", tip.c_str());
     }
     if (renaming) { // the name field over the row, after the glyph; Enter or a click elsewhere keeps it, Esc cancels
-        ImGui::SameLine(ImGui::GetItemRectMin().x - ImGui::GetWindowPos().x + ImGui::GetTreeNodeToLabelSpacing() + ImGui::GetFontSize() * 1.6f);
-        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SetCursorScreenPos(ImVec2(rowMin.x + ImGui::GetTreeNodeToLabelSpacing() + ImGui::GetFontSize() * 1.6f, rowMin.y));
+        ImGui::SetNextItemWidth(rowMax.x - ImGui::GetCursorScreenPos().x);
         if (m_renameFocus) {
             ImGui::SetKeyboardFocusHere();
             m_renameFocus = false;
@@ -570,6 +701,10 @@ void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
             }
             m_renaming = false;
         }
+    }
+    if (movedCursor) { // back under the row (the marks or the name field moved the cursor)
+        ImGui::SetCursorScreenPos(ImVec2(rowMin.x, rowMax.y));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
     }
     if (open) {
         if (node.kind != "use")
@@ -625,15 +760,19 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
     }
 
     // A number property: a drag box when the value is numbers (count = how many), the raw text dimmed when it is a $token or a word
+    f32 rowReserve = 0.0f; // room kept at a row's end (the token combo)
     auto numberRow = [&](const char* label, const char* key, f32 fallback, f32 speed, f32 lo, f32 hi, const char* format) {
         std::string v;
         const bool has = ui::getProperty(node, key, v);
         std::vector<f32> n = has ? numbers(v) : std::vector<f32>{fallback};
         if (n.size() != 1) {
+            ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("%s  %s %s", label, key, v.c_str());
             return;
         }
-        if (ImGui::DragFloat(propertyRow(label).c_str(), &n[0], speed, lo, hi, format, ImGuiSliderFlags_AlwaysClamp)) ui::setProperty(node, key, number(n[0]));
+        const std::string id = propertyRow(label);
+        if (rowReserve > 0.0f) ImGui::SetNextItemWidth(-rowReserve);
+        if (ImGui::DragFloat(id.c_str(), &n[0], speed, lo, hi, format, ImGuiSliderFlags_AlwaysClamp)) ui::setProperty(node, key, number(n[0]));
     };
     // A word property from a list; (default) removes the line
     auto comboRow = [&](const char* label, const char* key, const char* const* options, size_t count) {
@@ -705,23 +844,34 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
         }
     }
 
-    bool styleHeader = false;
+    // Style: fill and text color with a picker (or the $token they use) and a token combo beside them
+    if (node.kind != "board" || ui::getProperty(node, "fill", value)) ImGui::SeparatorText(tr("Style"));
     for (const char* key : {"fill", "color"}) {
-        std::string probe;
-        f32 parsed[4];
-        if (!styleHeader && ui::getProperty(node, key, probe) && parseHex(probe, parsed)) { // $theme tokens have no picker here
-            ImGui::SeparatorText(tr("Style"));
-            styleHeader = true;
-        }
+        if (!ui::getProperty(node, key, value)) continue;
+        const std::string label = std::string(key == std::string("fill") ? tr("Fill") : tr("Text color")) + "##" + key;
         f32 rgba[4];
-        if (ui::getProperty(node, key, value) && parseHex(value, rgba)) {
-            const std::string label = std::string(key == std::string("fill") ? tr("Fill") : tr("Text color")) + "##" + key;
-            if (colorEdit(propertyRow(label.c_str()).c_str(), rgba, true)) ui::setProperty(node, key, hex(rgba, value.size() == 9 || rgba[3] < 1.0f));
+        const f32 combo = ImGui::GetFrameHeight() * 1.6f + ImGui::GetStyle().ItemSpacing.x;
+        if (parseHex(value, rgba)) {
+            const std::string id = propertyRow(label.c_str());
+            ImGui::SetNextItemWidth(-combo);
+            if (colorEdit(id.c_str(), rgba, true)) ui::setProperty(node, key, hex(rgba, value.size() == 9 || rgba[3] < 1.0f));
+        } else {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(label.substr(0, label.find("##")).c_str());
+            ImGui::SameLine(ImGui::GetContentRegionMax().x * 0.4f);
+            ImGui::TextDisabled("%s", value.c_str());
         }
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - combo + ImGui::GetStyle().ItemSpacing.x);
+        tokenCombo(node, key, true);
     }
     if (node.kind != "board") {
-        if (!styleHeader) ImGui::SeparatorText(tr("Style"));
-        if (node.kind == "frame" || node.kind == "image") numberRow(tr("Corner radius"), "radius", 0.0f, 0.5f, 0.0f, 10000.0f, "%.0f");
+        if (node.kind == "frame" || node.kind == "image") {
+            rowReserve = ImGui::GetFrameHeight() * 1.6f + ImGui::GetStyle().ItemSpacing.x;
+            numberRow(tr("Corner radius"), "radius", 0.0f, 0.5f, 0.0f, 10000.0f, "%.0f");
+            rowReserve = 0.0f;
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 1.6f);
+            tokenCombo(node, "radius", false);
+        }
         numberRow(tr("Opacity"), "opacity", 1.0f, 0.01f, 0.0f, 1.0f, "%.2f");
     }
 
@@ -898,6 +1048,8 @@ void UiPanel::handleKeys() {
         }
         return;
     }
+    if (io.KeyCtrl && io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_C, false)) return copyStyle();
+    if (io.KeyCtrl && io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_V, false)) return pasteStyle();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) { // up one level; from the board, nothing
         if (m_selection.empty()) m_hasSelection = false;
         else m_selection.pop_back();

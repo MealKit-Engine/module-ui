@@ -32,6 +32,34 @@ static_assert(mkui::rgba(1, 2, 3, 4) == render::rgba(1, 2, 3, 4));
 u64 g_atlasUser = 0;
 u64 g_nextAtlasUser = 1;
 
+// Pseudo-localization (editor preview): ASCII letters become accented look-alikes, {fields} and <n> span tags stay, about 40% more
+// characters at the end, and brackets show where the text was cut
+void pseudoize(const std::string& in, std::string& out) {
+    // UTF-8 escapes (sources are read in the system code page): a b c d e f g h i j k l m n o p q r s t u v w x y z look-alikes
+    static const char* const kLower[26] = {"\xC3\xA5", "\xC6\x80", "\xC3\xA7", "\xC3\xB0", "\xC3\xA9", "\xC6\x92", "\xC4\x9D", "\xC4\xA5", "\xC3\xAE",
+                                           "\xC4\xB5", "\xC4\xB7", "\xC4\xBC", "m",        "\xC3\xB1", "\xC3\xB6", "\xC3\xBE", "q",        "\xC5\x95",
+                                           "\xC5\xA1", "\xC5\xA3", "\xC3\xBB", "v",        "\xC5\xB5", "x",        "\xC3\xBD", "\xC5\xBE"};
+    static const char* const kUpper[26] = {"\xC3\x85", "B",        "\xC3\x87", "\xC3\x90", "\xC3\x89", "F",        "\xC4\x9C", "\xC4\xA4", "\xC3\x8E",
+                                           "\xC4\xB4", "\xC4\xB6", "\xC4\xBB", "M",        "\xC3\x91", "\xC3\x96", "\xC3\x9E", "Q",        "\xC5\x94",
+                                           "\xC5\xA0", "\xC5\xA2", "\xC3\x9B", "V",        "\xC5\xB4", "X",        "\xC3\x9D", "\xC5\xBD"};
+    out.clear();
+    out += '[';
+    u32 letters = 0;
+    int depth = 0; // inside {field} or <tag>
+    for (size_t i = 0; i < in.size(); ++i) {
+        const char c = in[i];
+        if (c == '{' || c == '<') ++depth;
+        if (depth == 0 && c >= 'a' && c <= 'z') out += kLower[c - 'a'];
+        else if (depth == 0 && c >= 'A' && c <= 'Z') out += kUpper[c - 'A'];
+        else out += c;
+        if (c == '}' || c == '>') depth = depth > 0 ? depth - 1 : 0;
+        if (depth == 0 && (static_cast<unsigned char>(c) & 0xC0) != 0x80 && c != ' ') ++letters; // code points, not bytes
+    }
+    out += ' ';
+    for (u32 i = 0, n = (letters * 2 + 4) / 5; i < n; ++i) out += '~';
+    out += ']';
+}
+
 // Assets, logs, strings and atlases for the runtime
 struct EngineHost final : mkui::Host {
     render::Renderer* renderer = nullptr;
@@ -54,7 +82,14 @@ struct EngineHost final : mkui::Host {
         if (level == mkui::LogLevel::Warn) MEALKIT_WARN("%s", message.c_str());
         else MEALKIT_INFO("%s", message.c_str());
     }
-    const std::string& text(const std::string& key) override { return strings ? strings->get(key) : key; }
+    bool pseudo = false;
+    std::string pseudoText;
+    const std::string& text(const std::string& key) override {
+        const std::string& t = strings ? strings->get(key) : key;
+        if (!pseudo) return t;
+        pseudoize(t, pseudoText);
+        return pseudoText;
+    }
     bool decodeImage(const std::string& bytes, u32& width, u32& height, std::vector<u8>& rgba) override {
         int w = 0, h = 0, channels = 0;
         u8* pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()), static_cast<int>(bytes.size()), &w, &h, &channels, 4);
@@ -232,6 +267,17 @@ void System::setPreviewState(ScreenId screen, i32 node, mkui::State state) { m->
 void System::moveFocus(ScreenId screen, int direction) { m->ui.moveFocus(screen, direction); }
 void System::setFocusVisible(bool always) { m->ui.setFocusVisible(always); }
 u32 System::quadCount() const { return m->ui.quadCount(); }
+void System::setPseudoText(bool on) {
+    if (m->host.pseudo == on) return;
+    m->host.pseudo = on;
+    m->ui.reload();
+}
+bool System::pseudoText() const { return m->host.pseudo; }
+std::vector<ScreenId> System::screens() const { return m->ui.screens(); }
+reflect::View System::viewModel(ScreenId screen) const {
+    const mkui::Model vm = m->ui.model(screen);
+    return vm ? reflect::View{static_cast<const reflect::TypeInfo*>(vm.type), vm.data} : reflect::View{};
+}
 bool System::press(ScreenId screen, const std::string& nodeName) { return m->ui.press(screen, nodeName); }
 bool System::pressAny(const std::string& nodeName) { return m->ui.pressAny(nodeName); }
 bool System::focusText(ScreenId screen, const std::string& nodeName) { return m->ui.focusText(screen, nodeName); }

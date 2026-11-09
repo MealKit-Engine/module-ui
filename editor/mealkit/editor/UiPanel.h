@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 
+namespace mealkit {
+class Input;
+}
+
 // Editor [UI] workspace (a tab beside the Viewport, DECISIONS 2026-11-09): game screens (assets/ui/*.ui) edited on a canvas of their own.
 // Layout: toolbar row (edit buttons, resolution, scale, language), left column screens + node tree, middle canvas, right column properties,
 // preview values, focus and problems.
@@ -41,6 +45,9 @@ public:
     void zoomActual();     // 100%, board centered
     void zoomFit();        // the whole board in view
     void frameSelection(); // zoom so the selected box fills most of the canvas (fit when nothing is selected)
+    // View toggles (view menu, and editor commands for the palette): "layout", "safe", "rulers", "grid", "snap", "pseudo", "interact"
+    void toggleView(const std::string& which);
+    void capturePng() { if (m_screen && m_captureStep == 0) m_captureStep = 1; } // the board as art/ui/captures/<screen>_<size>_<lang>.png
     // Code editor from the editor's preferences (empty = VS Code), for "Open in code editor"
     void setCodeEditor(const std::string* editor) { m_codeEditor = editor; }
     // Workspace state kept across restarts in build\editor\panels.txt: screen, resolution, language, scale, columns.
@@ -50,6 +57,9 @@ public:
     void select(const std::string& uiFile); // automated tests: "hud.ui"
     void refresh();                         // reread the assets/ui file list
     void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot plugin install address (import server)
+    void setInput(const Input* input) { m_input = input; }             // window input: the canvas's interact mode presses widgets with it
+    // While playing (the workspace tab can't edit): the game's open screens with their live view model values, kept as preview values
+    void drawPlayValues(ui::System& gameUi);
     // Draws the backdrop over the workspace and the screen on the canvas (after 3D, before editor UI), only while the workspace is visible
     void render(render::Renderer& renderer, f64 dt);
 
@@ -123,6 +133,27 @@ private:
     int nodeLine(const ui::SourcePath& path) const; // line of the node's head in the saved file (1 when not found)
     bool treeMatches(const ui::SourceNode& node) const; // node or a descendant matches the layer filter
     void collectNodeProblems();                         // m_nodeProblems for the tree badges (bindings against the preview view model)
+    // Tools (UiPanelTools.cpp)
+    void refreshDraft();          // preview text: unsaved edits plus editor-only hidden nodes (nullptr when neither)
+    bool editorHidden(const ui::SourcePath& path) const; // the node or an ancestor is hidden in the editor only (eye)
+    bool editorLocked(const ui::SourcePath& path) const; // ... locked: the canvas doesn't pick it
+    void toggleName(std::vector<std::string>& names, const std::string& name);
+    void drawViewMenu();          // canvas strip: outlines, safe area, rulers, grid, snapping, overflow marks, pseudo text
+    void drawCanvasGuides();      // grid, rulers, safe area, layout outlines, overflow marks, Alt distances (overlay)
+    void drawFieldList();         // left column: the preview view model's fields, dragged onto a layer or the canvas to bind
+    bool bindField(const ui::SourcePath& path, const std::string& field); // writes the binding that fits the field's kind
+    void drawThemeSection();      // right column: theme.ui tokens with pickers and use counts
+    void loadTheme();
+    bool tokenCombo(ui::SourceNode& node, const char* key, bool color); // $token picker beside a property
+    void copyStyle();
+    void pasteStyle();
+    void drawHistoryMenu();       // toolbar: undo steps, click to go back to one
+    void drawChanges();           // toolbar: the unsaved lines against the file, save or revert
+    void drawScreenTools();       // duplicate and rename popups for the screens list
+    void startScreenRename(const std::string& file);
+    void duplicateScreen(const std::string& file);
+    void notice(const std::string& text); // a line in the canvas path strip for a few seconds (and the log)
+    void finishCapture();         // crops the captured back buffer to the board and saves art/ui/captures/<screen>.png
     bool insertNode(ui::SourceNode node);
     enum class Drag : u8 { None, Move, Resize, Reorder };
     bool boxOf(const ui::SourcePath& path, ui::NodeBox& out) const; // first visible box of a node (last layout)
@@ -162,6 +193,47 @@ private:
     bool m_hasHover = false, m_treeHovered = false;
     ui::SourcePath m_hover;
     std::vector<std::pair<ui::SourcePath, std::string>> m_nodeProblems;
+
+    // View options (canvas strip, view menu)
+    bool m_showLayout = false, m_showSafeArea = false, m_showRulers = false, m_showGrid = false, m_snapGrid = false, m_showOverflow = true;
+    f32 m_gridSize = 8.0f;
+    // Interact mode: the canvas gets the mouse like the game, actions are listed instead of editing
+    bool m_interact = false;
+    const Input* m_input = nullptr;
+    std::vector<std::string> m_actionLog;
+    // Editor-only hide and lock, by node name (names are unique in a screen); cleared when another screen opens
+    std::vector<std::string> m_hiddenNodes, m_lockedNodes;
+    std::string m_draft;
+    int m_openAll = 0;               // layers: 1 expands, -1 collapses every row this frame
+    bool m_dragNode = false;         // a layer row is being dragged (m_dragFrom)
+    ui::SourcePath m_dragFrom;
+    std::string m_dragField;         // a view model field is being dragged
+    // Tree edits found while drawing the tree, applied after it (the tree mustn't change under the loop)
+    bool m_moveQueued = false, m_bindQueued = false;
+    ui::SourcePath m_moveFrom, m_moveParent, m_bindPath;
+    u32 m_moveAt = 0;
+    std::string m_bindField;
+    std::vector<std::string> m_styleClipboard; // style lines (fill, stroke, radius, font ...)
+    std::string m_preset, m_newPreset; // preview value set ("" = the default one)
+    // Theme tokens (assets/ui/theme.ui)
+    struct Token {
+        bool color = true;
+        std::string name, value;
+        u32 uses = 0;
+    };
+    std::vector<Token> m_tokens;
+    std::string m_themeText;       // the file as read (other lines kept on save)
+    bool m_themeDirty = false;
+    f64 m_themeTimer = 0.0;
+    // Screens: duplicate / rename
+    bool m_screenRenameOpen = false;
+    std::string m_screenFrom, m_screenTo;
+    std::vector<std::string> m_screenRefs; // project files naming ui/<from>.ui
+    // Capture, notices, stats
+    int m_captureStep = 0;
+    std::string m_notice;
+    f64 m_noticeTime = 0.0;
+    f64 m_layoutMs = 0.0;
 
     // Editing
     bool m_editing = true, m_editable = false; // the workspace always edits; m_editable false for Penpot exports and unreadable files

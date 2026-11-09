@@ -95,6 +95,11 @@ bool UiPanel::pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool ove
     m_scaleK = info.scale;
     m_boxes = m_ui.boxes(m_screen);
     const f32 lx = (x - m_originX) / m_scaleK, ly = (y - m_originY) / m_scaleK;
+    if (m_interact) { // the screen takes the mouse itself (render passes it the input)
+        m_drag = Drag::None;
+        m_hasHover = false;
+        return false;
+    }
     m_hoverHandle = m_drag == Drag::None && !overUi ? handleAt(x, y) : m_dragHandle;
     // Hover outline: the topmost box under the mouse (a hovered layer row sets it instead)
     if (!m_treeHovered) {
@@ -102,7 +107,7 @@ bool UiPanel::pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool ove
         u32 depth = 0;
         if (!overUi && m_drag == Drag::None)
             for (const ui::NodeBox& b : m_boxes)
-                if (b.visible && b.node < m_map.size() && !m_map[b.node].empty() && lx >= b.x && ly >= b.y && lx < b.x + b.w && ly < b.y + b.h && (!m_hasHover || b.depth >= depth)) {
+                if (b.visible && b.node < m_map.size() && !m_map[b.node].empty() && !editorLocked(m_map[b.node]) && lx >= b.x && ly >= b.y && lx < b.x + b.w && ly < b.y + b.h && (!m_hasHover || b.depth >= depth)) {
                     m_hover = m_map[b.node];
                     m_hasHover = true;
                     depth = b.depth;
@@ -120,6 +125,7 @@ bool UiPanel::pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool ove
         for (const ui::NodeBox& b : m_boxes) {
             if (!b.visible || lx < b.x || ly < b.y || lx >= b.x + b.w || ly >= b.y + b.h || b.node >= m_map.size()) continue;
             const ui::SourcePath& path = m_map[b.node];
+            if (editorLocked(path)) continue; // locked in the editor: clicks go to what's beneath
             bool seen = false;
             for (const auto& hit : hits) seen = seen || hit.second == path;
             if (!seen) hits.push_back({b.depth, path});
@@ -194,7 +200,11 @@ void UiPanel::dragMove(f32 dx, f32 dy, bool snap) {
     ui::SourceNode* n = ui::findNode(m_source, m_selection);
     if (!n || !m_dragOk) return;
     m_guides.clear();
-    if (snap) {
+    if (snap && m_snapGrid) { // grid snapping: the box's top left on the grid (instead of the siblings' edges)
+        const f32 g = std::max(m_gridSize, 1.0f);
+        dx = std::round((m_startBox[0] + dx) / g) * g - m_startBox[0];
+        dy = std::round((m_startBox[1] + dy) / g) * g - m_startBox[1];
+    } else if (snap) {
         // Edges and centers of the moved box against the parent's and the siblings'
         std::vector<f32> xs, ys;
         ui::NodeBox p;
@@ -247,6 +257,21 @@ void UiPanel::dragResize(f32 dx, f32 dy) {
     if (m_dragHandle & kTop) {
         h -= dy;
         y += dy;
+    }
+    if (m_snapGrid && !ImGui::GetIO().KeyCtrl) { // the moved edges on the grid
+        const f32 g = std::max(m_gridSize, 1.0f);
+        if (m_dragHandle & kRight) w = std::round((x + w) / g) * g - x;
+        if (m_dragHandle & kBottom) h = std::round((y + h) / g) * g - y;
+        if (m_dragHandle & kLeft) {
+            const f32 right = x + w;
+            x = std::round(x / g) * g;
+            w = right - x;
+        }
+        if (m_dragHandle & kTop) {
+            const f32 bottom = y + h;
+            y = std::round(y / g) * g;
+            h = bottom - y;
+        }
     }
     w = std::max(w, 1.0f);
     h = std::max(h, 1.0f);
@@ -303,7 +328,9 @@ void UiPanel::finishReorder() {
 }
 
 void UiPanel::drawOverlay() {
-    if (!editing() || !m_screen) return;
+    if (!editing() || !m_screen || m_captureStep == 1) return; // a capture frame shows the board alone
+    drawCanvasGuides();
+    if (m_interact) return;
     ImDrawList* draw = ImGui::GetBackgroundDrawList(); // over the scene view, under the editor windows
     auto px = [this](f32 lx, f32 ly) { return ImVec2(m_originX + lx * m_scaleK, m_originY + ly * m_scaleK); };
     const ImU32 blue = IM_COL32(80, 170, 255, 255);
