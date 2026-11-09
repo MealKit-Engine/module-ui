@@ -78,6 +78,12 @@ public:
     // kind: frame / text / image / use (args = component path). Inside the selected frame, else after the selected node
     bool addNew(const std::string& kind, const std::string& args = {});
     bool wrapSelected();
+    // Components (ROADMAP "UI workspace window" 4): the selected frame → assets/ui/components/<name>.ui + `use` in its place
+    // (the component file is written at once, the screen edit is unsaved like any edit). editComponent opens the selected use's
+    // file in the workspace with a way back to this screen (the screen shows the saved component again)
+    bool makeComponent(const std::string& name);
+    bool canEditComponent() const; // the selection is a use of a file in the screens list
+    void editComponent();
     // Mouse over the canvas every frame (screen pixels): press selects the topmost box (ctrl: the one beneath), dragging the
     // selection moves it (free nodes, snapping unless ctrl) or reorders it (nodes a layout places), handles resize. overUi = an editor
     // window has the mouse. true while the panel uses the mouse
@@ -127,6 +133,8 @@ private:
     void drawBindings(ui::SourceNode& node);
     const reflect::TypeInfo* bindingScope(const ui::SourcePath& path) const; // view model type a node's fields are read from (element type inside a list)
     void drawSavePrompt();
+    void drawMakeComponent(); // name popup for makeComponent
+    void openFile(const std::string& file); // a screens list entry, asking to save first
     void drawNewScreen(); // [+] in the screens header: name → assets/ui/<name>.ui with an empty board
     void drawScreenMenu(const std::string& file);
     void openInCodeEditor(const std::string& assetPath, int line);
@@ -186,6 +194,12 @@ private:
     std::string m_restoreScreen; // from panels.txt, opened by setProject
     std::string m_screenFilter, m_layerFilter, m_newScreen;
     bool m_newScreenOpen = false;
+    bool m_makeComponentOpen = false;
+    std::string m_componentName;
+    std::string m_returnScreen;          // screen a component was opened from ("hud.ui"), for the toolbar's back button
+    ui::SourcePath m_returnSelection;    // the use node there, selected again on the way back
+    bool m_restoreSelection = false;
+    bool m_editComponentQueued = false; // editComponent from a menu or the properties: opened by drawMakeComponent (not under the tree loop)
     // Layers: rename in place (F2, double-click), hover (canvas or tree row) outlined on the canvas, binding problems per node
     bool m_renaming = false, m_renameFocus = false;
     ui::SourcePath m_renamePath;

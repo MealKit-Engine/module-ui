@@ -24,6 +24,8 @@ using mkui::addNode;
 using mkui::findNode;
 using mkui::getProperty;
 using mkui::mapDocumentNodes;
+using mkui::extractComponent;
+using mkui::isPlacementLine;
 using mkui::moveNode;
 using mkui::parseNodeText;
 using mkui::parseSource;

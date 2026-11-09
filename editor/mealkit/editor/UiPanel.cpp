@@ -161,6 +161,7 @@ void UiPanel::refresh() {
     if (dir.empty()) return;
     for (const std::string& f : listFiles(dir, ".ui"))
         if (std::string("ui/") + f != ui::kThemeFile) m_files.push_back(f);
+    for (const std::string& f : listFiles(dir + "/components", ".ui")) m_files.push_back("components/" + f); // made with makeComponent
 }
 
 void UiPanel::select(const std::string& uiFile) {
@@ -185,6 +186,11 @@ void UiPanel::openSelected() {
         loadValues();
     }
     loadSource();
+    if (m_restoreSelection && ui::findNode(m_source, m_returnSelection)) { // back from a component: the use node again
+        m_selection = m_returnSelection;
+        m_hasSelection = true;
+    }
+    m_restoreSelection = false;
 }
 
 void UiPanel::bindViewModel() {
@@ -248,6 +254,7 @@ void UiPanel::drawWorkspace() {
     ImGui::SetCursorScreenPos(ImVec2(areaPos.x, rowBottom));
     drawSavePrompt();
     drawNewScreen();
+    drawMakeComponent();
     drawScreenTools();
 
     // Ctrl+\ and the toolbar hide the side columns (as in Figma): a hidden one leaves a thin strip that peeks it in a popup
@@ -547,6 +554,7 @@ void UiPanel::drawLeftColumn() {
             if (!current && fuzzyScore(label, m_screenFilter) < 0) continue;
             if (current && dirty()) label += "  *";
             if (ImGui::Selectable((label + "##" + m_files[i]).c_str(), current) && !current) {
+                m_returnScreen.clear(); // picked by hand: no way back
                 if (dirty()) {
                     m_pendingScreen = static_cast<int>(i); // ask first (drawSavePrompt)
                 } else {

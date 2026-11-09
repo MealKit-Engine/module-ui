@@ -8,6 +8,7 @@
 #include "mealkit/platform/Paths.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <imgui.h>
@@ -419,6 +420,17 @@ void UiPanel::drawEditToolbar() {
         ImGui::TextDisabled("%s", tr("No screen open"));
         return;
     }
+    // Back to the screen a component was opened from
+    if (!m_returnScreen.empty() && "ui/" + m_returnScreen != m_path) {
+        if (ImGui::Button(("î«  " + m_returnScreen).c_str())) { // U+E72B back
+            const std::string back = m_returnScreen;
+            m_returnScreen.clear();
+            m_restoreSelection = true;
+            openFile(back);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Back to the screen this component was opened from"));
+        ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.5f);
+    }
     // Screen name, with a dot while unsaved
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(m_path.c_str());
@@ -479,6 +491,14 @@ void UiPanel::drawEditToolbar() {
     if (iconButton(icon::kTrash, tr("Delete (Del)"))) deleteSelected();
     ImGui::EndDisabled();
     ImGui::SameLine(0.0f, 2.0f);
+    const ui::SourceNode* sel = m_hasSelection ? ui::findNode(m_source, m_selection) : nullptr;
+    ImGui::BeginDisabled(!node || !sel || sel->kind != "frame");
+    if (iconButton(kindGlyph("use"), tr("Make component: the frame becomes ui/components/<name>.ui and a use of it"))) {
+        m_componentName = sel->name;
+        m_makeComponentOpen = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine(0.0f, 2.0f);
     if (iconButton(kPasteGlyph, tr("Paste (Ctrl+V)"))) paste();
 
     toolbarGap(ImGui::GetFrameHeight() * 2.0f);
@@ -533,6 +553,12 @@ void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
     if (ImGui::MenuItem(tr("Copy"), "Ctrl+C", false, node)) copySelected();
     if (ImGui::MenuItem(tr("Paste"), "Ctrl+V")) paste();
     if (ImGui::MenuItem(tr("Wrap in frame"), nullptr, false, node)) wrapSelected();
+    const ui::SourceNode* picked = ui::findNode(m_source, path);
+    if (ImGui::MenuItem(tr("Make component..."), nullptr, false, node && picked && picked->kind == "frame")) {
+        m_componentName = picked->name;
+        m_makeComponentOpen = true;
+    }
+    if (ImGui::MenuItem(tr("Edit component"), nullptr, false, canEditComponent())) editComponent();
     ImGui::Separator();
     if (ImGui::MenuItem(tr("Copy style"), "Ctrl+Alt+C")) copyStyle();
     if (ImGui::MenuItem(tr("Paste style"), "Ctrl+Alt+V", false, !m_styleClipboard.empty())) pasteStyle();
@@ -729,8 +755,13 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
     ImGui::SameLine();
     if (iconButton(kCodeGlyph, tr("Open this node in the code editor"))) openInCodeEditor(m_path, nodeLine(m_selection));
     if (node.kind == "use") {
-        ImGui::SetNextItemWidth(-1.0f);
+        const bool editable = canEditComponent();
+        ImGui::SetNextItemWidth(editable ? -ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x : -1.0f);
         inputString("##component", node.args);
+        if (editable) {
+            ImGui::SameLine();
+            if (iconButton(kindGlyph("use"), tr("Edit component (opens its file, with a button back here)"))) editComponent();
+        }
     }
 
     // Common properties with their own widgets (the lines below show every property as text)
@@ -1164,6 +1195,99 @@ void UiPanel::drawSavePrompt() {
         m_pendingScreen = -1;
         ImGui::CloseCurrentPopup();
     }
+    ImGui::EndPopup();
+}
+
+// Components ------------------------------------------------------------------------------------------------
+
+bool UiPanel::makeComponent(const std::string& name) {
+    if (!editing() || !m_hasSelection || m_selection.empty()) return false;
+    const ui::SourceNode* n = ui::findNode(m_source, m_selection);
+    ui::NodeBox b;
+    const std::string dir = findAsset("assets/ui");
+    if (!n || n->kind != "frame" || dir.empty() || !boxOf(m_selection, b)) return false;
+    const std::string file = dir + "/components/" + name + ".ui";
+    if (fileExists(file)) {
+        notice(trf("ui/components/%s.ui exists already", name.c_str()));
+        return false;
+    }
+    const std::string before = m_live;
+    ui::Source component;
+    if (!ui::extractComponent(m_source, m_selection, name, "ui/components/" + name + ".ui", static_cast<i32>(b.w + 0.5f),
+                              static_cast<i32>(b.h + 0.5f), component))
+        return false;
+    createDirectories(dir + "/components");
+    if (!writeTextFile(file, ui::writeSource(component))) {
+        MEALKIT_ERROR("UI edit: cannot write %s", file.c_str());
+        setText(before);
+        return false;
+    }
+    MEALKIT_INFO("UI edit: component %s from %s", file.c_str(), m_path.c_str());
+    refresh();
+    syncSource();
+    notice(trf("Component ui/components/%s.ui (save the screen to keep the use)", name.c_str()));
+    return true;
+}
+
+bool UiPanel::canEditComponent() const {
+    if (!m_hasSelection) return false;
+    const ui::SourceNode* n = ui::findNode(m_source, m_selection);
+    if (!n || n->kind != "use" || n->args.rfind("ui/", 0) != 0) return false;
+    return std::find(m_files.begin(), m_files.end(), n->args.substr(3)) != m_files.end();
+}
+
+void UiPanel::editComponent() {
+    if (canEditComponent()) m_editComponentQueued = true;
+}
+
+void UiPanel::openFile(const std::string& file) {
+    for (size_t i = 0; i < m_files.size(); ++i)
+        if (m_files[i] == file) {
+            if (dirty()) {
+                m_pendingScreen = static_cast<int>(i); // drawSavePrompt asks, then opens it
+            } else {
+                m_selected = static_cast<int>(i);
+                zoomFit();
+                openSelected();
+            }
+            return;
+        }
+}
+
+void UiPanel::drawMakeComponent() {
+    if (m_editComponentQueued) {
+        m_editComponentQueued = false;
+        if (canEditComponent() && m_selected >= 0 && m_selected < static_cast<int>(m_files.size())) {
+            const std::string target = ui::findNode(m_source, m_selection)->args.substr(3);
+            m_returnScreen = m_files[static_cast<size_t>(m_selected)];
+            m_returnSelection = m_selection;
+            openFile(target);
+        }
+    }
+    if (m_makeComponentOpen) {
+        ImGui::OpenPopup("##makeComponent");
+        m_makeComponentOpen = false;
+    }
+    if (!ImGui::BeginPopup("##makeComponent")) return;
+    ImGui::TextUnformatted(tr("Make component"));
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    const bool enter = uiInputText("##componentName", tr("name (ui/components/<name>.ui)"), m_componentName, ImGuiInputTextFlags_EnterReturnsTrue);
+    bool valid = !m_componentName.empty();
+    for (char c : m_componentName) valid = valid && (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
+    const std::string dir = findAsset("assets/ui");
+    const bool exists = valid && !dir.empty() && fileExists(dir + "/components/" + m_componentName + ".ui");
+    if (!m_componentName.empty() && !valid) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("Letters, digits, _ and - only"));
+    if (exists) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("A component with this name exists"));
+    ImGui::TextDisabled("%s", tr("Where it sits (pos, size, constraints ...) stays on the use, the rest moves to the component."));
+    ImGui::BeginDisabled(!valid || exists);
+    if (ImGui::Button(tr("Create")) || (enter && valid && !exists)) {
+        makeComponent(m_componentName);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Cancel")) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
 
