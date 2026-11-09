@@ -217,6 +217,7 @@ void UiPanel::loadSource() {
     m_source = {};
     m_editable = false;
     m_hasSelection = m_hasHover = m_renaming = false;
+    m_multi.clear();
     m_undo.clear();
     m_redo.clear();
     m_live = m_committed = m_saved = {};
@@ -261,6 +262,7 @@ void UiPanel::setText(const std::string& text) {
     if (!ui::parseSource(text, source)) return;
     m_source = std::move(source);
     m_committed = text;
+    m_multi.clear(); // paths of another version of the file
     syncSource();
 }
 
@@ -303,6 +305,7 @@ bool UiPanel::save() {
 }
 
 bool UiPanel::deleteSelected() {
+    if (editing() && multiSelected()) return deleteMany();
     if (!editing() || !m_hasSelection || m_selection.empty()) return false;
     if (!ui::removeNode(m_source, m_selection)) return false;
     m_hasSelection = false;
@@ -354,6 +357,7 @@ bool UiPanel::addNew(const std::string& kind, const std::string& args) {
 }
 
 bool UiPanel::duplicateSelected() {
+    if (editing() && multiSelected()) return duplicateMany();
     if (!editing() || !m_hasSelection || m_selection.empty()) return false;
     const ui::SourceNode* n = ui::findNode(m_source, m_selection);
     if (!n) return false;
@@ -366,6 +370,10 @@ bool UiPanel::duplicateSelected() {
 }
 
 bool UiPanel::copySelected() {
+    if (editing() && multiSelected()) {
+        ImGui::SetClipboardText(selectionText().c_str());
+        return true;
+    }
     if (!editing() || !m_hasSelection || m_selection.empty()) return false;
     const ui::SourceNode* n = ui::findNode(m_source, m_selection);
     if (!n) return false;
@@ -376,11 +384,13 @@ bool UiPanel::copySelected() {
 bool UiPanel::paste() {
     const char* text = ImGui::GetClipboardText();
     ui::SourceNode n;
-    if (!editing() || !text || !ui::parseNodeText(toLf(text), n)) return false;
-    return insertNode(std::move(n));
+    if (!editing() || !text) return false;
+    if (ui::parseNodeText(toLf(text), n)) return insertNode(std::move(n));
+    return pasteMany(toLf(text)); // several nodes copied together
 }
 
 bool UiPanel::wrapSelected() {
+    if (editing() && multiSelected()) return wrapMany();
     if (!editing() || !m_hasSelection || m_selection.empty()) return false;
     ui::SourceNode* n = ui::findNode(m_source, m_selection);
     ui::NodeBox b;
@@ -404,6 +414,17 @@ bool UiPanel::wrapSelected() {
 
 bool UiPanel::selectNode(const std::string& name) {
     m_editing = true;
+    if (name.find(',') != std::string::npos) { // --ui-select a,b,c: several
+        std::vector<std::string> names;
+        size_t a = 0;
+        while (a <= name.size()) {
+            const size_t b = std::min(name.find(',', a), name.size());
+            if (b > a) names.push_back(name.substr(a, b - a));
+            a = b + 1;
+        }
+        selectNames(names);
+        return selectedPaths().size() == names.size();
+    }
     for (const ui::SourcePath& path : m_map)
         if (const ui::SourceNode* n = ui::findNode(m_source, path); n && n->name == name) {
             m_selection = path;
@@ -492,7 +513,7 @@ void UiPanel::drawEditToolbar() {
     ImGui::EndDisabled();
     ImGui::SameLine(0.0f, 2.0f);
     const ui::SourceNode* sel = m_hasSelection ? ui::findNode(m_source, m_selection) : nullptr;
-    ImGui::BeginDisabled(!node || !sel || sel->kind != "frame");
+    ImGui::BeginDisabled(!node || !sel || sel->kind != "frame" || multiSelected());
     if (iconButton(kindGlyph("use"), tr("Make component: the frame becomes ui/components/<name>.ui and a use of it"))) {
         m_componentName = sel->name;
         m_makeComponentOpen = true;
@@ -547,6 +568,7 @@ void UiPanel::drawAddMenu() {
 // Menu items change the tree after it is drawn (defer): this menu opens from a layer row inside drawTree, and removing or adding
 // nodes there would pull the tree out from under the loop (a crash: Add > Image, then Delete from the row menu)
 void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
+    if (!isSelected(path)) m_multi.clear(); // right-click inside a group keeps the group
     m_selection = path;
     m_hasSelection = true;
     const bool node = !path.empty();
@@ -565,6 +587,15 @@ void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
         m_makeComponentOpen = true;
     }
     if (ImGui::MenuItem(tr("Edit component"), nullptr, false, canEditComponent())) editComponent();
+    if (ImGui::BeginMenu(tr("Align"), node)) {
+        const char* names[] = {tr("Left"), tr("Center"), tr("Right"), tr("Top"), tr("Middle"), tr("Bottom")};
+        for (int i = 0; i < 6; ++i)
+            if (ImGui::MenuItem(names[i])) defer([this, i] { alignSelected(i); });
+        ImGui::Separator();
+        if (ImGui::MenuItem(tr("Distribute horizontally"), nullptr, false, multiSelected())) defer([this] { distributeSelected(false); });
+        if (ImGui::MenuItem(tr("Distribute vertically"), nullptr, false, multiSelected())) defer([this] { distributeSelected(true); });
+        ImGui::EndMenu();
+    }
     ImGui::Separator();
     if (ImGui::MenuItem(tr("Copy style"), "Ctrl+Alt+C")) copyStyle();
     if (ImGui::MenuItem(tr("Paste style"), "Ctrl+Alt+V", false, !m_styleClipboard.empty())) defer([this] { pasteStyle(); });
@@ -590,7 +621,7 @@ void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
                                ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_AllowOverlap;
     if (node.children.empty() || node.kind == "use") flags |= ImGuiTreeNodeFlags_Leaf;
-    if (m_hasSelection && m_selection == path) flags |= ImGuiTreeNodeFlags_Selected;
+    if (m_hasSelection && isSelected(path)) flags |= ImGuiTreeNodeFlags_Selected;
     if ((m_hasSelection && isUnder(m_selection, path) && m_selection != path) || !m_layerFilter.empty()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     else if (m_openAll != 0) ImGui::SetNextItemOpen(m_openAll > 0, ImGuiCond_Always);
     ImGui::PushID(static_cast<int>(path.empty() ? -1 : static_cast<int>(path.back())));
@@ -608,8 +639,13 @@ void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
     const bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     if (!renaming) {
         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-            m_selection = path;
-            m_hasSelection = true;
+            if ((ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift) && m_editable) {
+                toggleSelected(path); // Ctrl/Shift+click: in or out of the selection
+            } else {
+                m_selection = path;
+                m_hasSelection = true;
+                m_multi.clear();
+            }
         }
         if (m_editable && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
             m_renaming = m_renameFocus = true;
@@ -793,6 +829,7 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
     }
     drawSizeRows(node);
     if (!placedByLayout) drawAnchors(node);
+    if (!placedByLayout && node.kind != "board") drawAlignRow(false);
     // Where the layout put it (read-only): what the game draws at the chosen resolution
     if (ui::NodeBox drawn; boxOf(m_selection, drawn)) {
         ImGui::AlignTextToFramePadding();
@@ -1118,6 +1155,7 @@ void UiPanel::handleKeys() {
 
 // Arrow keys: a free node's pos by whole units (nodes a layout places don't move; $token positions aren't touched)
 void UiPanel::nudge(f32 dx, f32 dy) {
+    if (multiSelected()) return nudgeMany(dx, dy);
     if (m_selection.empty() || !layoutOf(m_selection).empty()) return;
     ui::SourceNode* n = ui::findNode(m_source, m_selection);
     if (!n) return;

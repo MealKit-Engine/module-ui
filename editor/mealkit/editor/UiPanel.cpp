@@ -664,7 +664,9 @@ void UiPanel::openInCodeEditor(const std::string& assetPath, int line) {
 
 void UiPanel::drawRightColumn() {
     if (m_screen && m_editable) {
-        if (m_hasSelection) {
+        if (multiSelected()) {
+            drawMultiInspector();
+        } else if (m_hasSelection) {
             if (ui::SourceNode* n = ui::findNode(m_source, m_selection)) {
                 // Inside a flex/grid layout the parent places the node (pos is ignored unless the node is absolute)
                 std::string layout, unused;

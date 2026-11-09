@@ -79,6 +79,11 @@ public:
     // kind: frame / text / image / use (args = component path). Inside the selected frame, else after the selected node
     bool addNew(const std::string& kind, const std::string& args = {});
     bool wrapSelected();
+    // Several nodes (UiPanelSelect.cpp): Shift+click on the canvas, Ctrl/Shift+click in the layers, a box dragged on empty space, Ctrl+A
+    void selectAll();
+    void alignSelected(int how); // 0 left, 1 center, 2 right, 3 top, 4 middle, 5 bottom (one node: in its parent)
+    void distributeSelected(bool vertical);
+    bool multiSelected() const { return selectedPaths().size() > 1; }
     // Components (ROADMAP "UI workspace window" 4): the selected frame → assets/ui/components/<name>.ui + `use` in its place
     // (the component file is written at once, the screen edit is unsaved like any edit). editComponent opens the selected use's
     // file in the workspace with a way back to this screen (the screen shows the saved component again)
@@ -139,6 +144,31 @@ private:
     const reflect::TypeInfo* bindingScope(const ui::SourcePath& path) const; // view model type a node's fields are read from (element type inside a list)
     void drawSavePrompt();
     void drawMakeComponent(); // name popup for makeComponent
+    // Multi-selection (UiPanelSelect.cpp)
+    std::vector<ui::SourcePath> selectedPaths() const; // the selection, primary last; one path when single
+    bool isSelected(const ui::SourcePath& path) const;
+    void toggleSelected(const ui::SourcePath& path);
+    void setSelection(const std::vector<ui::SourcePath>& paths);
+    std::vector<ui::SourcePath> topSelected() const;     // without nodes inside another selected one, never the board
+    std::vector<ui::SourcePath> movableSelected() const; // free nodes with a numeric pos
+    std::vector<std::string> namesOf(const std::vector<ui::SourcePath>& paths) const;
+    bool pathOfName(const std::string& name, ui::SourcePath& out) const;
+    void selectNames(const std::vector<std::string>& names);
+    bool deleteMany();
+    bool duplicateMany();
+    bool wrapMany();
+    std::string selectionText() const;
+    bool pasteMany(const std::string& text);
+    void offsetPos(const ui::SourcePath& path, f32 dx, f32 dy);
+    void nudgeMany(f32 dx, f32 dy);
+    void drawAlignRow(bool several);
+    void drawMultiInspector();
+    void finishMarquee();
+    std::vector<ui::SourcePath> m_multi; // every selected path (m_selection included) while more than one is selected
+    f32 m_marquee[4] = {};               // logical: start x, y, current x, y
+    std::vector<std::pair<std::string, std::vector<f32>>> m_groupStart; // group move: node name, start pos
+    bool m_collapseOnRelease = false;    // a click (no drag) on a member of a group selects just that member
+    ui::SourcePath m_pressed;
     // Library and inspector rows for people new to the workspace (UiPanelLibrary.cpp)
     void drawLibrary();      // left column: ready-made widgets to click or drag in
     void drawLibraryMenu();  // the same widgets in the Add menu
@@ -183,7 +213,7 @@ private:
     // Tree edits asked for while the tree or a menu is being drawn run at the start of the next drawWorkspace
     void defer(std::function<void()> action) { m_deferred.push_back(std::move(action)); }
     std::vector<std::function<void()>> m_deferred;
-    enum class Drag : u8 { None, Move, Resize, Reorder };
+    enum class Drag : u8 { None, Move, Resize, Reorder, Marquee };
     bool boxOf(const ui::SourcePath& path, ui::NodeBox& out) const; // first visible box of a node (last layout)
     std::string layoutOf(const ui::SourcePath& path) const;          // parent's layout if it places this node, else empty
     u32 handleAt(f32 x, f32 y) const;                                // resize handle of the selection under the mouse (edge bits)

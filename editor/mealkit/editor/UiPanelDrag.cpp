@@ -1,5 +1,6 @@
 // [UI] panel editing with the mouse on the preview (UiPanel.h): select, move and resize free nodes with snapping,
 // reorder nodes a flex/grid layout places, and the overlays that show it (handles, guides, insert line, padding)
+#include "mealkit/editor/Strings.h"
 #include "mealkit/editor/UiPanel.h"
 
 #include <algorithm>
@@ -65,7 +66,7 @@ std::string UiPanel::layoutOf(const ui::SourcePath& path) const {
 
 u32 UiPanel::handleAt(f32 x, f32 y) const {
     ui::NodeBox b;
-    if (!m_hasSelection || m_selection.empty() || !layoutOf(m_selection).empty() || !boxOf(m_selection, b)) return 0;
+    if (!m_hasSelection || m_selection.empty() || multiSelected() || !layoutOf(m_selection).empty() || !boxOf(m_selection, b)) return 0;
     const f32 x0 = m_originX + b.x * m_scaleK, y0 = m_originY + b.y * m_scaleK;
     const f32 x1 = x0 + b.w * m_scaleK, y1 = y0 + b.h * m_scaleK;
     const f32 r = kHandle + 2.0f;
@@ -130,25 +131,69 @@ bool UiPanel::pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool ove
             for (const auto& hit : hits) seen = seen || hit.second == path;
             if (!seen) hits.push_back({b.depth, path});
         }
-        if (hits.empty()) return false;
+        if (hits.empty()) { // outside the board: a selection box
+            if (!ImGui::GetIO().KeyShift) {
+                m_hasSelection = false;
+                m_multi.clear();
+            }
+            startDrag(Drag::Marquee, x, y);
+            m_marquee[0] = m_marquee[2] = lx;
+            m_marquee[1] = m_marquee[3] = ly;
+            return true;
+        }
         std::stable_sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        if (ImGui::GetIO().KeyShift && !ctrl) { // Shift+click: the topmost box joins or leaves the selection
+            for (const auto& hit : hits)
+                if (!hit.second.empty()) {
+                    toggleSelected(hit.second);
+                    break;
+                }
+            return true;
+        }
         size_t pick = 0;
         if (ctrl && m_hasSelection) // Ctrl: the box beneath the selected one
             for (size_t i = 0; i < hits.size(); ++i)
                 if (hits[i].second == m_selection) pick = (i + 1) % hits.size();
         // Without Ctrl, pressing inside the selected node keeps it (so its children don't steal the drag)
+        // With several selected, pressing on any of them keeps the group (a drag moves all; a click without a drag picks that one)
         bool keep = false;
+        m_collapseOnRelease = false;
         if (!ctrl && m_hasSelection)
-            for (const auto& hit : hits) keep = keep || hit.second == m_selection;
-        if (!keep) m_selection = hits[pick].second;
+            for (const auto& hit : hits)
+                if (isSelected(hit.second) && !hit.second.empty()) {
+                    keep = true;
+                    if (multiSelected()) {
+                        m_collapseOnRelease = true;
+                        m_pressed = hit.second;
+                    }
+                    break;
+                } else if (hit.second == m_selection) {
+                    keep = true;
+                    break;
+                }
+        if (!keep) {
+            m_selection = hits[pick].second;
+            m_multi.clear();
+        }
         m_hasSelection = true;
-        if (!m_selection.empty()) startDrag(layoutOf(m_selection).empty() ? Drag::Move : Drag::Reorder, x, y);
+        if (m_selection.empty()) { // the board itself: dragging draws a selection box
+            startDrag(Drag::Marquee, x, y);
+            m_marquee[0] = m_marquee[2] = lx;
+            m_marquee[1] = m_marquee[3] = ly;
+        } else if (multiSelected()) {
+            startDrag(Drag::Move, x, y); // free members move together; layout members stay
+        } else if (!m_selection.empty()) {
+            startDrag(layoutOf(m_selection).empty() ? Drag::Move : Drag::Reorder, x, y);
+        }
         m_dragArmed = false; // becomes a drag after kDragStart pixels
         return true;
     }
     if (m_drag == Drag::None) return false;
     if (!down) {
         if (m_drag == Drag::Reorder && m_dragArmed) finishReorder();
+        if (m_drag == Drag::Marquee && m_dragArmed) finishMarquee();
+        if (m_collapseOnRelease && !m_dragArmed) setSelection({m_pressed}); // a click on one member of a group
+        m_collapseOnRelease = false;
         m_drag = Drag::None;
         m_guides.clear();
         m_insert = {};
@@ -160,7 +205,10 @@ bool UiPanel::pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool ove
         m_dragArmed = true;
     }
     const f32 dx = (x - m_dragStart[0]) / m_scaleK, dy = (y - m_dragStart[1]) / m_scaleK;
-    if (m_drag == Drag::Move) dragMove(dx, dy, !ctrl);
+    if (m_drag == Drag::Marquee) {
+        m_marquee[2] = lx;
+        m_marquee[3] = ly;
+    } else if (m_drag == Drag::Move) dragMove(dx, dy, !ctrl);
     else if (m_drag == Drag::Resize) dragResize(dx, dy);
     else updateReorder(lx, ly);
     return true;
@@ -180,6 +228,21 @@ void UiPanel::startDrag(Drag kind, f32 x, f32 y) {
     m_startBox[1] = b.y;
     m_startBox[2] = b.w;
     m_startBox[3] = b.h;
+    m_groupStart.clear();
+    if (kind == Drag::Move && multiSelected()) { // every free member's start pos, by name
+        for (const ui::SourcePath& p : movableSelected())
+            if (const ui::SourceNode* m = ui::findNode(m_source, p)) {
+                std::string v;
+                std::vector<f32> pos = {0.0f, 0.0f};
+                if (ui::getProperty(*m, "pos", v)) {
+                    const std::vector<std::string> w = words(v);
+                    if (w.size() != 2 || !toNumber(w[0], pos[0]) || !toNumber(w[1], pos[1])) continue;
+                }
+                m_groupStart.push_back({m->name, pos});
+            }
+        // The primary's box drives snapping; a layout-placed primary snaps nothing but the group still moves
+        if (!layoutOf(m_selection).empty()) m_dragOk = false;
+    }
     const ui::SourceNode* n = ui::findNode(m_source, m_selection);
     std::string value;
     m_startPos[0] = m_startPos[1] = 0.0f;
@@ -197,8 +260,10 @@ void UiPanel::startDrag(Drag kind, f32 x, f32 y) {
 }
 
 void UiPanel::dragMove(f32 dx, f32 dy, bool snap) {
+    const bool group = !m_groupStart.empty();
+    if (group && !m_dragOk) snap = false; // no box of its own to snap with
     ui::SourceNode* n = ui::findNode(m_source, m_selection);
-    if (!n || !m_dragOk) return;
+    if (!group && (!n || !m_dragOk)) return;
     m_guides.clear();
     if (snap && m_snapGrid) { // grid snapping: the box's top left on the grid (instead of the siblings' edges)
         const f32 g = std::max(m_gridSize, 1.0f);
@@ -218,7 +283,7 @@ void UiPanel::dragMove(f32 dx, f32 dy, bool snap) {
                 ui::SourcePath sibling = parent;
                 sibling.push_back(c);
                 ui::NodeBox s;
-                if (sibling == m_selection || !boxOf(sibling, s)) continue;
+                if (sibling == m_selection || isSelected(sibling) || !boxOf(sibling, s)) continue;
                 xs.insert(xs.end(), {s.x, s.x + s.w * 0.5f, s.x + s.w});
                 ys.insert(ys.end(), {s.y, s.y + s.h * 0.5f, s.y + s.h});
             }
@@ -240,7 +305,15 @@ void UiPanel::dragMove(f32 dx, f32 dy, bool snap) {
         snapAxis(dx, m_startBox[0], m_startBox[2], xs, true);
         snapAxis(dy, m_startBox[1], m_startBox[3], ys, false);
     }
-    ui::setProperty(*n, "pos", whole(m_startPos[0] + dx) + " " + whole(m_startPos[1] + dy));
+    if (group) {
+        for (const auto& [name, pos] : m_groupStart) {
+            ui::SourcePath p;
+            if (pathOfName(name, p))
+                if (ui::SourceNode* m = ui::findNode(m_source, p)) ui::setProperty(*m, "pos", whole(pos[0] + dx) + " " + whole(pos[1] + dy));
+        }
+    } else {
+        ui::setProperty(*n, "pos", whole(m_startPos[0] + dx) + " " + whole(m_startPos[1] + dy));
+    }
     syncSource();
 }
 
@@ -353,8 +426,30 @@ void UiPanel::drawOverlay() {
         draw->AddRect(a, c, IM_COL32(80, 170, 255, 170), 0.0f, 0, 1.0f);
         tag(a, nameOf(m_hover), IM_COL32(40, 90, 150, 220), a.y - m_canvas.y < ImGui::GetTextLineHeight() + 6.0f);
     }
+    if (m_drag == Drag::Marquee && m_dragArmed) { // selection box
+        const ImVec2 a = px(std::min(m_marquee[0], m_marquee[2]), std::min(m_marquee[1], m_marquee[3]));
+        const ImVec2 c = px(std::max(m_marquee[0], m_marquee[2]), std::max(m_marquee[1], m_marquee[3]));
+        draw->AddRectFilled(a, c, IM_COL32(80, 170, 255, 40));
+        draw->AddRect(a, c, blue, 0.0f, 0, 1.0f);
+    }
     if (!m_hasSelection) return;
-    if (boxOf(m_selection, b)) {
+    if (multiSelected()) { // every member outlined, their joint bounds dashed-looking (thin), a count tag
+        f32 x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        int shown = 0;
+        for (const ui::SourcePath& p : selectedPaths()) {
+            if (!boxOf(p, b)) continue;
+            const ImVec2 a = px(b.x, b.y), c = px(b.x + b.w, b.y + b.h);
+            draw->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(c.x + 1, c.y + 1), p == m_selection ? blue : IM_COL32(80, 170, 255, 200), 0.0f, 0, p == m_selection ? 2.0f : 1.5f);
+            x0 = std::min(x0, a.x), y0 = std::min(y0, a.y), x1 = std::max(x1, c.x), y1 = std::max(y1, c.y);
+            ++shown;
+        }
+        if (shown > 1) {
+            draw->AddRect(ImVec2(x0 - 4, y0 - 4), ImVec2(x1 + 4, y1 + 4), IM_COL32(80, 170, 255, 120), 0.0f, 0, 1.0f);
+            char count[32];
+            std::snprintf(count, sizeof count, "%d", shown);
+            tag(ImVec2(x0 - 4, y1 + 4), std::string(count) + " " + tr("selected"), IM_COL32(40, 120, 220, 235), true);
+        }
+    } else if (boxOf(m_selection, b)) {
         const ImVec2 a = px(b.x, b.y), c = px(b.x + b.w, b.y + b.h);
         // Padding (numbers only; $tokens aren't resolved here): tinted band inside the box
         std::string value;
