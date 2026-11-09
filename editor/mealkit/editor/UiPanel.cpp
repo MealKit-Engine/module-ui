@@ -142,6 +142,7 @@ void UiPanel::drawWorkspace() {
     draw->ChannelsSetCurrent(1);
     ImGui::BeginGroup();
     drawEditToolbar();
+    drawViewToggles();
     ImGui::EndGroup();
     const f32 rowBottom = ImGui::GetItemRectMax().y + 5.0f;
     draw->ChannelsSetCurrent(0);
@@ -150,23 +151,35 @@ void UiPanel::drawWorkspace() {
     ImGui::SetCursorScreenPos(ImVec2(areaPos.x, rowBottom));
     drawSavePrompt();
 
-    const ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoPadInnerX;
+    // Ctrl+\ and the toolbar hide the side columns (as in Figma): a hidden one leaves a thin strip that peeks it in a popup
+    const ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoPadOuterX |
+                                  ImGuiTableFlags_NoPadInnerX;
     const f32 height = std::max(areaPos.y + areaSize.y - rowBottom, 1.0f);
     m_canvasHovered = false;
     if (ImGui::BeginTable("##uiWorkspace", 3, flags, ImVec2(0.0f, height))) {
         ImGui::TableSetupColumn("screens", ImGuiTableColumnFlags_WidthStretch, 0.20f);
-        ImGui::TableSetupColumn("canvas", ImGuiTableColumnFlags_WidthStretch, 0.52f);
+        ImGui::TableSetupColumn("canvas", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoHide, 0.52f);
         ImGui::TableSetupColumn("properties", ImGuiTableColumnFlags_WidthStretch, 0.28f);
+        ImGui::TableSetColumnEnabled(0, m_leftOpen);
+        ImGui::TableSetColumnEnabled(2, m_rightOpen);
         ImGui::TableNextRow(ImGuiTableRowFlags_None, height);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
-        ImGui::TableSetColumnIndex(0);
-        if (ImGui::BeginChild("##uiLeft", ImVec2(0.0f, height), ImGuiChildFlags_AlwaysUseWindowPadding)) drawLeftColumn();
-        ImGui::EndChild();
+        if (ImGui::TableSetColumnIndex(0) && m_leftOpen) {
+            if (ImGui::BeginChild("##uiLeft", ImVec2(0.0f, height), ImGuiChildFlags_AlwaysUseWindowPadding)) drawLeftColumn();
+            ImGui::EndChild();
+        }
 
-        // Canvas column: path strip, the canvas, view strip
+        // Canvas column: hidden columns' strips at its sides; path strip, the canvas, view strip
         ImGui::TableSetColumnIndex(1);
-        const ImVec2 colPos = ImGui::GetCursorScreenPos();
-        const f32 colWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+        const f32 sideStrip = ImGui::GetFrameHeight() + 8.0f;
+        const ImVec2 cellPos = ImGui::GetCursorScreenPos();
+        const f32 cellWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+        const f32 leftStrip = m_leftOpen ? 0.0f : sideStrip, rightStrip = m_rightOpen ? 0.0f : sideStrip;
+        if (!m_leftOpen) drawColumnStrip(true, cellPos.x, cellPos.y, height);
+        if (!m_rightOpen) drawColumnStrip(false, cellPos.x + cellWidth - sideStrip, cellPos.y, height);
+        const ImVec2 colPos(cellPos.x + leftStrip, cellPos.y);
+        const f32 colWidth = std::max(cellWidth - leftStrip - rightStrip, 1.0f);
+        ImGui::SetCursorScreenPos(colPos);
         const f32 strip = ImGui::GetFrameHeight() + 8.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
         if (ImGui::BeginChild("##uiPath", ImVec2(colWidth, strip), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar)) drawBreadcrumb();
@@ -193,14 +206,57 @@ void UiPanel::drawWorkspace() {
         ImGui::EndChild();
         ImGui::PopStyleVar();
 
-        ImGui::TableSetColumnIndex(2);
-        if (ImGui::BeginChild("##uiRight", ImVec2(0.0f, height), ImGuiChildFlags_AlwaysUseWindowPadding)) drawRightColumn();
-        ImGui::EndChild();
+        if (ImGui::TableSetColumnIndex(2) && m_rightOpen) {
+            if (ImGui::BeginChild("##uiRight", ImVec2(0.0f, height), ImGuiChildFlags_AlwaysUseWindowPadding)) drawRightColumn();
+            ImGui::EndChild();
+        }
         ImGui::PopStyleColor();
         ImGui::EndTable();
     }
     if (m_screen && m_editable) syncSource();
     drawOverlay();
+}
+
+void UiPanel::toggleColumns() {
+    const bool show = !m_leftOpen && !m_rightOpen; // any column showing: hide both; none: bring both back
+    m_leftOpen = m_rightOpen = show;
+}
+
+// Right end of the toolbar row: the column toggles and maximize (after the edit buttons, never over them)
+void UiPanel::drawViewToggles() {
+    const f32 button = ImGui::GetFrameHeight(), gap = 2.0f;
+    const f32 width = button * 3.0f + gap * 2.0f;
+    const f32 afterLast = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetFontSize();
+    ImGui::SameLine(std::max(afterLast, m_area.x + m_area.width - ImGui::GetWindowPos().x - width - 16.0f)); // the offset counts from the group start (8 px in)
+    if (iconButton("\xEE\xA4\x8C", tr("Screens and layers (Ctrl+\\ hides both columns)"), m_leftOpen)) m_leftOpen = !m_leftOpen; // U+E90C dock left
+    ImGui::SameLine(0.0f, gap);
+    if (iconButton("\xEE\xA4\x8D", tr("Inspector (Ctrl+\\ hides both columns)"), m_rightOpen)) m_rightOpen = !m_rightOpen; // U+E90D dock right
+    ImGui::SameLine(0.0f, gap);
+    if (iconButton(m_maximized ? "\xEE\x9C\xBF" : "\xEE\x9D\x80", m_maximized ? tr("Restore (Shift+Space)") : tr("Maximize (Shift+Space)"), m_maximized))
+        toggleMaximized(); // U+E73F back to window / U+E740 full screen
+}
+
+// A hidden column's strip: its button peeks the column in a popup beside the strip (closes on a click outside), Keep open shows it again
+void UiPanel::drawColumnStrip(bool left, f32 x, f32 y, f32 height) {
+    const f32 width = ImGui::GetFrameHeight() + 8.0f;
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x, y), ImVec2(x + width, y + height), ImGui::GetColorU32(ImGuiCol_WindowBg));
+    ImGui::SetCursorScreenPos(ImVec2(x + 4.0f, y + 4.0f));
+    ImGui::PushID(left ? "leftStrip" : "rightStrip");
+    const char* popup = left ? "##peekLeft" : "##peekRight";
+    if (iconButton(left ? "\xEE\xA4\x8C" : "\xEE\xA4\x8D", left ? tr("Screens and layers") : tr("Inspector"))) ImGui::OpenPopup(popup);
+    const f32 peekWidth = std::max(ImGui::GetFontSize() * (left ? 18.0f : 22.0f), m_area.width * (left ? 0.2f : 0.28f));
+    ImGui::SetNextWindowPos(ImVec2(left ? x + width : x - peekWidth, y));
+    ImGui::SetNextWindowSize(ImVec2(peekWidth, height));
+    if (ImGui::BeginPopup(popup)) {
+        if (ImGui::SmallButton(tr("Keep open"))) {
+            (left ? m_leftOpen : m_rightOpen) = true;
+            ImGui::CloseCurrentPopup();
+        }
+        if (left) drawLeftColumn();
+        else drawRightColumn();
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
 }
 
 void UiPanel::handleCanvasView() {
@@ -295,7 +351,7 @@ void UiPanel::drawCanvasBar() {
     char percent[16];
     std::snprintf(percent, sizeof percent, "%.0f%%", k * 100.0f);
     const f32 button = ImGui::GetFrameHeight();
-    const f32 zoomWidth = button * 3.0f + ImGui::CalcTextSize("000%").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+    const f32 zoomWidth = button * 4.0f + ImGui::CalcTextSize("000%").x + ImGui::GetStyle().ItemSpacing.x * 4.0f;
     const f32 afterLast = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetFontSize(); // never over the items before it
     ImGui::SameLine(std::max(afterLast, ImGui::GetWindowWidth() - zoomWidth - 8.0f));
     if (iconButton("\xEE\x9C\x9F", tr("Zoom out"))) m_zoom = std::max(0.05f, k / 1.25f); // U+E71F
@@ -307,8 +363,15 @@ void UiPanel::drawCanvasBar() {
     ImGui::SameLine();
     if (iconButton("\xEE\xA2\xA3", tr("Zoom in"))) m_zoom = std::min(8.0f, k * 1.25f); // U+E8A3
     ImGui::SameLine();
-    if (iconButton("\xEE\xA6\xA6", tr("Fit (whole screen in view)"), m_zoom <= 0.0f)) { // U+E9A6
+    if (iconButton("\xEE\xA6\xA6", tr("Fit (whole screen in view)"), m_zoom <= 0.0f && !m_fitWidth)) { // U+E9A6
         m_zoom = 0.0f;
+        m_fitWidth = false;
+        m_pan[0] = m_pan[1] = 0.0f;
+    }
+    ImGui::SameLine();
+    if (iconButton("\xE2\x86\x94", tr("Fit width"), m_zoom <= 0.0f && m_fitWidth)) { // U+2194
+        m_zoom = 0.0f;
+        m_fitWidth = true;
         m_pan[0] = m_pan[1] = 0.0f;
     }
 }
@@ -453,14 +516,20 @@ void UiPanel::render(render::Renderer& renderer, f64 dt) {
     backdrop.color0 = render::rgba(24, 25, 28, 255);
     renderer.drawUi(&backdrop, 1);
     if (!m_screen) return;
-    // Fit mode: the whole board inside the canvas with a margin, never above 100%. Otherwise the chosen zoom, moved by the pan
+    // Fit mode: the whole board (or its width) inside the canvas with a thin margin; above 100% only whole multiples, so text stays
+    // sharp. Otherwise the chosen zoom, moved by the pan
     const Resolution& r = kResolutions[m_resolution];
-    constexpr f32 kMargin = 32.0f;
+    constexpr f32 kMargin = 12.0f;
     const f32 vw = std::max(1.0f, m_canvas.width - kMargin * 2.0f), vh = std::max(1.0f, m_canvas.height - kMargin * 2.0f);
-    const f32 k = m_zoom > 0.0f ? m_zoom : std::min(1.0f, std::min(vw / r.w, vh / r.h));
+    f32 k = m_zoom;
+    if (k <= 0.0f) {
+        k = m_fitWidth ? vw / r.w : std::min(vw / r.w, vh / r.h);
+        if (k > 1.0f) k = std::floor(k);
+    }
     const f32 w = r.w * k, h = r.h * k;
     const f32 cx = m_canvas.x + m_canvas.width * 0.5f + (m_zoom > 0.0f ? m_pan[0] : 0.0f);
-    const f32 cy = m_canvas.y + m_canvas.height * 0.5f + (m_zoom > 0.0f ? m_pan[1] : 0.0f);
+    f32 cy = m_canvas.y + m_canvas.height * 0.5f + (m_zoom > 0.0f ? m_pan[1] : 0.0f);
+    if (m_zoom <= 0.0f && h > vh) cy = m_canvas.y + kMargin + h * 0.5f; // fit width, taller than the canvas: from its top (drag to see the rest)
     const render::Viewport view{std::round(cx - w * 0.5f), std::round(cy - h * 0.5f), w, h};
     m_view = view;
     render::UiQuad frame; // preview area indicator

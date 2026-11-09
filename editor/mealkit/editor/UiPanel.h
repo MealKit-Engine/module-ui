@@ -31,6 +31,10 @@ public:
     // rendered on the back buffer under it, see render)
     void drawWorkspace();
     bool canvasHovered() const { return m_canvasHovered; } // the mouse is on the canvas (not on a column, the toolbar or a popup)
+    // Maximized (Shift+Space, toolbar button): the editor gives the workspace its whole dock area and hides the other panels
+    bool maximized() const { return m_maximized; }
+    void toggleMaximized() { m_maximized = !m_maximized; }
+    void toggleColumns(); // Ctrl+\: hide both side columns (canvas only), or show them again
     void select(const std::string& uiFile); // automated tests: "hud.ui"
     void refresh();                         // reread the assets/ui file list
     void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot plugin install address (import server)
@@ -80,6 +84,8 @@ private:
     void syncSource();          // after edits: new text → preview draft, node map; commits history when no widget is active
     void setText(const std::string& text); // undo/redo: replace the source with this text
     void drawEditToolbar();     // toolbar row: screen name, save/undo/redo, add menu, selection actions (icon buttons)
+    void drawViewToggles();     // toolbar row, right end: left column, right column, maximize
+    void drawColumnStrip(bool left, f32 x, f32 y, f32 height); // a hidden column's thin strip: peek it in a popup, or show it again
     void drawAddMenu();         // items of the + menu (toolbar and node context menu)
     void drawNodeMenu(const ui::SourcePath& path); // right-click on a tree row or the canvas
     void drawBreadcrumb();      // canvas top strip: path of the selection, each part selects that node
@@ -136,6 +142,8 @@ private:
     render::Viewport m_area{}, m_canvas{}; // workspace content and the canvas area between its strips (screen pixels, last drawWorkspace)
     bool m_canvasHovered = false;
     f32 m_zoom = 0.0f;       // board pixels per logical unit; 0 = fit the canvas
+    bool m_fitWidth = false; // fit mode fits the width only (a tall screen starts at its top)
+    bool m_maximized = false, m_leftOpen = true, m_rightOpen = true;
     f32 m_pan[2] = {};       // board center offset from the canvas center (screen pixels)
     render::Viewport m_view{}; // where the board was drawn last frame (zoom around the mouse, the % shown)
 
