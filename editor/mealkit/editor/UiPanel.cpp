@@ -2,11 +2,13 @@
 
 #include "mealkit/core/Log.h"
 #include "mealkit/editor/FieldEditor.h"
+#include "mealkit/editor/ImGuiLayer.h"
 #include "mealkit/editor/Strings.h"
 #include "mealkit/platform/Paths.h"
 #include "mealkit/ui/Document.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <imgui.h>
 
@@ -111,51 +113,86 @@ void UiPanel::bindViewModel() {
 
 // The next toolbar group on this row if `width` pixels are left, else on a new row (a narrow tab wraps instead of clipping)
 void toolbarGap(f32 width) {
-    ImGui::SameLine(0.0f, ImGui::GetFontSize());
+    ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.75f);
     if (ImGui::GetContentRegionAvail().x < width) {
         ImGui::NewLine();
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 6.0f);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.0f);
+        return;
     }
+    // Thin divider between groups
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const f32 h = ImGui::GetFrameHeight();
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + h * 0.2f), ImVec2(p.x, p.y + h * 0.8f), ImGui::GetColorU32(ImGuiCol_Separator));
+    ImGui::Dummy(ImVec2(1.0f, h));
+    ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.75f);
 }
 
+// Workspace layout, after UI Builder / Figma: a toolbar row; screens and layers on the left; the canvas in the middle with the selection's
+// path above it and view settings below it; the inspector on the right. Columns are resizable shares of the width.
 void UiPanel::drawWorkspace() {
     if (m_files.empty()) refresh();
     const ImVec2 areaPos = ImGui::GetCursorScreenPos(), areaSize = ImGui::GetContentRegionAvail();
     m_area = {areaPos.x, areaPos.y, std::max(areaSize.x, 1.0f), std::max(areaSize.y, 1.0f)};
+    ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    // Toolbar row: editing on the left, preview settings after it
-    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 6.0f, ImGui::GetCursorPosY() + 4.0f));
-    if (m_screen) {
-        drawEditToolbar();
-        toolbarGap(ImGui::GetFontSize() * 22.0f);
-    }
-    drawPreviewSettings();
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    // Toolbar row on the panel color (the window has no background: the canvas shows the back buffer)
+    const f32 rowTop = areaPos.y;
+    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 8.0f, ImGui::GetCursorPosY() + 5.0f));
+    draw->ChannelsSplit(2);
+    draw->ChannelsSetCurrent(1);
+    ImGui::BeginGroup();
+    drawEditToolbar();
+    ImGui::EndGroup();
+    const f32 rowBottom = ImGui::GetItemRectMax().y + 5.0f;
+    draw->ChannelsSetCurrent(0);
+    draw->AddRectFilled(ImVec2(areaPos.x, rowTop), ImVec2(areaPos.x + areaSize.x, rowBottom), ImGui::GetColorU32(ImGuiCol_WindowBg));
+    draw->ChannelsMerge();
+    ImGui::SetCursorScreenPos(ImVec2(areaPos.x, rowBottom));
     drawSavePrompt();
 
-    // Three resizable columns below it; the middle one is the canvas (no background: render draws the screen under it)
-    const ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoPadOuterX;
-    const f32 height = std::max(ImGui::GetContentRegionAvail().y, 1.0f);
+    const ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoPadInnerX;
+    const f32 height = std::max(areaPos.y + areaSize.y - rowBottom, 1.0f);
     m_canvasHovered = false;
     if (ImGui::BeginTable("##uiWorkspace", 3, flags, ImVec2(0.0f, height))) {
-        // Shares of the width, so the canvas keeps the middle half however wide the tab is
-        ImGui::TableSetupColumn("screens", ImGuiTableColumnFlags_WidthStretch, 0.22f);
-        ImGui::TableSetupColumn("canvas", ImGuiTableColumnFlags_WidthStretch, 0.50f);
+        ImGui::TableSetupColumn("screens", ImGuiTableColumnFlags_WidthStretch, 0.20f);
+        ImGui::TableSetupColumn("canvas", ImGuiTableColumnFlags_WidthStretch, 0.52f);
         ImGui::TableSetupColumn("properties", ImGuiTableColumnFlags_WidthStretch, 0.28f);
         ImGui::TableNextRow(ImGuiTableRowFlags_None, height);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
         ImGui::TableSetColumnIndex(0);
         if (ImGui::BeginChild("##uiLeft", ImVec2(0.0f, height), ImGuiChildFlags_AlwaysUseWindowPadding)) drawLeftColumn();
         ImGui::EndChild();
+
+        // Canvas column: path strip, the canvas, view strip
         ImGui::TableSetColumnIndex(1);
-        const ImVec2 canvasPos = ImGui::GetCursorScreenPos();
-        const f32 canvasWidth = ImGui::GetContentRegionAvail().x;
-        m_canvas = {canvasPos.x, canvasPos.y, std::max(canvasWidth, 1.0f), height};
-        m_canvasHovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(canvasPos, ImVec2(canvasPos.x + canvasWidth, canvasPos.y + height));
+        const ImVec2 colPos = ImGui::GetCursorScreenPos();
+        const f32 colWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+        const f32 strip = ImGui::GetFrameHeight() + 8.0f;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
+        if (ImGui::BeginChild("##uiPath", ImVec2(colWidth, strip), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar)) drawBreadcrumb();
+        ImGui::EndChild();
+        const f32 canvasTop = colPos.y + strip, canvasHeight = std::max(height - strip * 2.0f, 1.0f);
+        m_canvas = {colPos.x, canvasTop, colWidth, canvasHeight};
+        m_canvasHovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(ImVec2(colPos.x, canvasTop), ImVec2(colPos.x + colWidth, canvasTop + canvasHeight));
+        ImGui::SetCursorScreenPos(ImVec2(colPos.x, canvasTop));
+        ImGui::Dummy(ImVec2(colWidth, canvasHeight));
         if (!m_screen) {
-            ImGui::SetCursorScreenPos(ImVec2(canvasPos.x + 16.0f, canvasPos.y + 16.0f));
-            ImGui::TextDisabled("%s", m_files.empty() ? tr("No .ui files in assets/ui.") : tr("Pick a screen on the left."));
+            const char* hint = m_files.empty() ? tr("No .ui files in assets/ui.") : tr("Pick a screen on the left.");
+            const ImVec2 size = ImGui::CalcTextSize(hint);
+            draw->AddText(ImVec2(colPos.x + (colWidth - size.x) * 0.5f, canvasTop + (canvasHeight - size.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), hint);
         }
+        if (m_canvasHovered && editing() && m_hasSelection && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f))
+            ImGui::OpenPopup("##canvasMenu");
+        if (ImGui::BeginPopup("##canvasMenu")) {
+            drawNodeMenu(m_selection);
+            ImGui::EndPopup();
+        }
+        handleCanvasView();
+        ImGui::SetCursorScreenPos(ImVec2(colPos.x, canvasTop + canvasHeight));
+        if (ImGui::BeginChild("##uiView", ImVec2(colWidth, strip), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar)) drawCanvasBar();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+
         ImGui::TableSetColumnIndex(2);
         if (ImGui::BeginChild("##uiRight", ImVec2(0.0f, height), ImGuiChildFlags_AlwaysUseWindowPadding)) drawRightColumn();
         ImGui::EndChild();
@@ -166,23 +203,73 @@ void UiPanel::drawWorkspace() {
     drawOverlay();
 }
 
-void UiPanel::drawPreviewSettings() {
+void UiPanel::handleCanvasView() {
+    if (!m_canvasHovered || !m_screen) return;
+    ImGuiIO& io = ImGui::GetIO();
+    const f32 k = m_view.width > 0.0f ? m_view.width / kResolutions[m_resolution].w : 1.0f; // current pixels per logical unit
+    if (io.MouseWheel != 0.0f) { // zoom around the mouse
+        const f32 nk = std::clamp(k * std::pow(1.15f, io.MouseWheel), 0.05f, 8.0f);
+        const f32 cx = m_canvas.x + m_canvas.width * 0.5f, cy = m_canvas.y + m_canvas.height * 0.5f;
+        const f32 lx = (io.MousePos.x - m_view.x) / k, ly = (io.MousePos.y - m_view.y) / k; // logical point under the mouse
+        const f32 w = kResolutions[m_resolution].w * nk, h = kResolutions[m_resolution].h * nk;
+        // New top left keeps that point under the mouse; the pan is relative to the canvas center
+        m_pan[0] = (io.MousePos.x - lx * nk) + w * 0.5f - cx;
+        m_pan[1] = (io.MousePos.y - ly * nk) + h * 0.5f - cy;
+        m_zoom = nk;
+    }
+    for (ImGuiMouseButton b : {ImGuiMouseButton_Middle, ImGuiMouseButton_Right})
+        if (ImGui::IsMouseDragging(b, 2.0f)) {
+            if (m_zoom <= 0.0f) m_zoom = k; // leave fit mode where it is
+            m_pan[0] += io.MouseDelta.x;
+            m_pan[1] += io.MouseDelta.y;
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        }
+}
+
+void UiPanel::drawBreadcrumb() {
+    if (!m_screen) return;
+    ImGui::AlignTextToFramePadding();
+    if (!m_hasSelection) {
+        ImGui::TextDisabled("%s", tr("Click a box to select it, Ctrl+click for the one beneath. Wheel zooms, middle or right drag moves the view."));
+        return;
+    }
+    // board > frame main > text title: each part selects that node
+    ui::SourcePath path;
+    for (size_t depth = 0; depth <= m_selection.size(); ++depth) {
+        if (depth > 0) path.push_back(m_selection[depth - 1]);
+        const ui::SourceNode* n = ui::findNode(m_source, path);
+        if (!n) break;
+        if (depth > 0) {
+            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::TextDisabled(">");
+            ImGui::SameLine(0.0f, 4.0f);
+        }
+        ImGui::PushID(static_cast<int>(depth));
+        const bool last = depth == m_selection.size();
+        if (!last) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        if (ImGui::SmallButton(n->name.empty() ? n->kind.c_str() : n->name.c_str())) m_selection = path;
+        if (!last) ImGui::PopStyleColor();
+        ImGui::PopID();
+    }
+}
+
+void UiPanel::drawCanvasBar() {
     const f32 font = ImGui::GetFontSize();
-    ImGui::SetNextItemWidth(font * 9.5f);
+    ImGui::SetNextItemWidth(font * 9.0f);
     if (beginCombo("##resolution", kResolutions[m_resolution].label)) {
         for (int i = 0; i < static_cast<int>(std::size(kResolutions)); ++i)
-            if (ImGui::Selectable(kResolutions[i].label, m_resolution == i)) m_resolution = i;
+            if (ImGui::Selectable(kResolutions[i].label, m_resolution == i)) {
+                m_resolution = i;
+                m_zoom = 0.0f; // a new size starts fitted
+                m_pan[0] = m_pan[1] = 0.0f;
+            }
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Resolution"));
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(font * 5.0f);
-    if (ImGui::SliderFloat("##uiScale", &m_scale, 0.5f, 2.0f, "x%.2f")) m_ui.setScale(m_scale);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("UI scale"));
     const std::vector<std::string> languages = m_strings.languages();
     if (!languages.empty()) {
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(font * 4.0f);
+        ImGui::SetNextItemWidth(font * 3.5f);
         if (beginCombo("##uiLanguage", m_strings.language().c_str())) {
             for (const std::string& lang : languages)
                 if (ImGui::Selectable(lang.c_str(), lang == m_strings.language())) {
@@ -194,31 +281,68 @@ void UiPanel::drawPreviewSettings() {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Language"));
     }
     ImGui::SameLine();
-    if (ImGui::Checkbox(tr("Show focus"), &m_showFocus)) m_ui.setFocusVisible(m_showFocus);
+    ImGui::SetNextItemWidth(font * 4.5f);
+    if (ImGui::DragFloat("##uiScale", &m_scale, 0.01f, 0.5f, 2.0f, "UI x%.2f", ImGuiSliderFlags_AlwaysClamp)) m_ui.setScale(m_scale);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("UI scale (players' setting): drag or double-click to type"));
+    ImGui::SameLine();
+    if (iconButton(icon::kFocus, tr("Show focus"), m_showFocus)) {
+        m_showFocus = !m_showFocus;
+        m_ui.setFocusVisible(m_showFocus);
+    }
+
+    // Zoom at the right end: - 75% + Fit
+    const f32 k = m_view.width > 0.0f ? m_view.width / kResolutions[m_resolution].w : 1.0f;
+    char percent[16];
+    std::snprintf(percent, sizeof percent, "%.0f%%", k * 100.0f);
+    const f32 button = ImGui::GetFrameHeight();
+    const f32 zoomWidth = button * 3.0f + ImGui::CalcTextSize("000%").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+    const f32 afterLast = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetFontSize(); // never over the items before it
+    ImGui::SameLine(std::max(afterLast, ImGui::GetWindowWidth() - zoomWidth - 8.0f));
+    if (iconButton("\xEE\x9C\x9F", tr("Zoom out"))) m_zoom = std::max(0.05f, k / 1.25f); // U+E71F
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(percent);
+    if (ImGui::IsItemClicked()) m_zoom = 1.0f; // 100%
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Click for 100%"));
+    ImGui::SameLine();
+    if (iconButton("\xEE\xA2\xA3", tr("Zoom in"))) m_zoom = std::min(8.0f, k * 1.25f); // U+E8A3
+    ImGui::SameLine();
+    if (iconButton("\xEE\xA6\xA6", tr("Fit (whole screen in view)"), m_zoom <= 0.0f)) { // U+E9A6
+        m_zoom = 0.0f;
+        m_pan[0] = m_pan[1] = 0.0f;
+    }
 }
 
 void UiPanel::drawLeftColumn() {
     ImGui::SeparatorText(tr("Screens"));
-    // Drag its bottom edge to see more screens at once
-    if (ImGui::BeginChild("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(6.0f, static_cast<f32>(m_files.size()) + 1.0f)),
+    // Drag its bottom edge to see more screens at once. The list rereads assets/ui every second
+    if (ImGui::BeginChild("##screens", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * std::min<f32>(6.0f, static_cast<f32>(m_files.size()) + 0.5f)),
                           ImGuiChildFlags_ResizeY | ImGuiChildFlags_FrameStyle)) {
-        for (size_t i = 0; i < m_files.size(); ++i)
-            if (ImGui::Selectable(m_files[i].c_str(), m_selected == static_cast<int>(i)) && m_selected != static_cast<int>(i)) {
+        for (size_t i = 0; i < m_files.size(); ++i) {
+            const bool current = m_selected == static_cast<int>(i);
+            std::string label = m_files[i];
+            if (label.size() > 3 && label.compare(label.size() - 3, 3, ".ui") == 0) label.resize(label.size() - 3);
+            if (current && dirty()) label += "  *";
+            if (ImGui::Selectable((label + "##" + m_files[i]).c_str(), current) && !current) {
                 if (dirty()) {
                     m_pendingScreen = static_cast<int>(i); // ask first (drawSavePrompt)
                 } else {
                     m_selected = static_cast<int>(i);
+                    m_zoom = 0.0f;
+                    m_pan[0] = m_pan[1] = 0.0f;
                     openSelected();
                 }
             }
+        }
     }
     ImGui::EndChild();
-    if (ImGui::SmallButton(tr("Refresh"))) refresh();
     if (!m_screen) return;
-    ImGui::SeparatorText(tr("Nodes"));
-    if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, -1.0f), ImGuiChildFlags_Borders))
+    ImGui::SeparatorText(tr("Layers"));
+    ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, ImGui::GetFontSize() * 0.9f);
+    if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, -1.0f)))
         if (ui::SourceNode* board = ui::findNode(m_source, {})) drawTree(*board, {});
     ImGui::EndChild();
+    ImGui::PopStyleVar();
 }
 
 void UiPanel::drawRightColumn() {
@@ -233,13 +357,19 @@ void UiPanel::drawRightColumn() {
                 drawProperties(*n, placed);
             }
         } else {
-            ImGui::SeparatorText(tr("Properties"));
-            ImGui::TextDisabled("%s", tr("Select a node on the canvas or in the tree."));
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", tr("Select a node on the canvas or in the layers."));
         }
+    } else if (m_screen) {
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", m_source.exported ? tr("Exported from Penpot: edit it in Penpot and export again.")
+                                                    : tr("The file could not be read for editing (see the log)."));
+        ImGui::PopTextWrapPos();
     }
 
     ImGui::Spacing();
-    if (sectionHeader(tr("Preview values"), ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (sectionHeader(tr("Preview values"))) {
         const char* vmName = m_vmType ? m_vmType->name : tr("(none)");
         if (beginCombo(propertyRow(tr("View model")).c_str(), vmName)) {
             if (ImGui::Selectable(tr("(none)"), !m_vmType)) {
@@ -260,8 +390,7 @@ void UiPanel::drawRightColumn() {
         if (m_vmType) {
             drawFields(*m_vmType, m_vm.data());
             if (ImGui::SmallButton(tr("Save values"))) saveValues();
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", tr("Kept in art/ui/samples, loaded with this screen."));
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Kept in art/ui/samples, loaded with this screen."));
         }
     }
     if (m_screen && sectionHeader(tr("Focus"))) {
@@ -274,13 +403,17 @@ void UiPanel::drawRightColumn() {
         const std::string focus = m_ui.info(m_screen).focus;
         ImGui::TextDisabled("%s", focus.empty() ? tr("(none)") : focus.c_str());
     }
-    if (m_screen && sectionHeader(tr("Problems"), ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (m_screen) {
         const ui::ScreenInfo info = m_ui.info(m_screen);
-        ImGui::TextDisabled("%s", info.exported ? tr("Exported from Penpot (do not edit by hand)") : tr("Hand-written"));
-        ImGui::Text("%s", trf("Nodes: %u (budget %u)", info.nodes, kNodeBudget).c_str());
-        if (info.nodes > kNodeBudget) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("Over the node budget"));
-        if (info.errors.empty()) ImGui::TextDisabled("%s", tr("No problems"));
-        for (const std::string& e : info.errors) ImGui::TextWrapped("%s", e.c_str());
+        // Problems open by themselves when there are any
+        const std::string title = info.errors.empty() ? std::string(tr("Problems")) : trf("Problems (%zu)", info.errors.size());
+        if (sectionHeader((title + "###problems").c_str(), info.errors.empty() ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextDisabled("%s", info.exported ? tr("Exported from Penpot (do not edit by hand)") : tr("Hand-written"));
+            ImGui::Text("%s", trf("Nodes: %u (budget %u)", info.nodes, kNodeBudget).c_str());
+            if (info.nodes > kNodeBudget) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", tr("Over the node budget"));
+            if (info.errors.empty()) ImGui::TextDisabled("%s", tr("No problems"));
+            for (const std::string& e : info.errors) ImGui::TextWrapped("%s", e.c_str());
+        }
     }
     // Penpot plugin: paste this address into Penpot's plugin manager (Ctrl+Alt+P). Changes every time the editor starts
     if (sectionHeader("Penpot")) {
@@ -320,18 +453,16 @@ void UiPanel::render(render::Renderer& renderer, f64 dt) {
     backdrop.color0 = render::rgba(24, 25, 28, 255);
     renderer.drawUi(&backdrop, 1);
     if (!m_screen) return;
-    // Fit inside the canvas (with a margin) at the chosen resolution's aspect, at that exact pixel size if it fits
+    // Fit mode: the whole board inside the canvas with a margin, never above 100%. Otherwise the chosen zoom, moved by the pan
     const Resolution& r = kResolutions[m_resolution];
-    constexpr f32 kMargin = 24.0f;
-    const render::Viewport sceneView{m_canvas.x + kMargin, m_canvas.y + kMargin, m_canvas.width - kMargin * 2.0f, m_canvas.height - kMargin * 2.0f};
-    const f32 vw = std::max(1.0f, sceneView.width), vh = std::max(1.0f, sceneView.height);
-    f32 w = r.w, h = r.h;
-    if (w > vw || h > vh) {
-        const f32 k = std::min(vw / w, vh / h);
-        w *= k;
-        h *= k;
-    }
-    const render::Viewport view{sceneView.x + (vw - w) * 0.5f, sceneView.y + (vh - h) * 0.5f, w, h};
+    constexpr f32 kMargin = 32.0f;
+    const f32 vw = std::max(1.0f, m_canvas.width - kMargin * 2.0f), vh = std::max(1.0f, m_canvas.height - kMargin * 2.0f);
+    const f32 k = m_zoom > 0.0f ? m_zoom : std::min(1.0f, std::min(vw / r.w, vh / r.h));
+    const f32 w = r.w * k, h = r.h * k;
+    const f32 cx = m_canvas.x + m_canvas.width * 0.5f + (m_zoom > 0.0f ? m_pan[0] : 0.0f);
+    const f32 cy = m_canvas.y + m_canvas.height * 0.5f + (m_zoom > 0.0f ? m_pan[1] : 0.0f);
+    const render::Viewport view{std::round(cx - w * 0.5f), std::round(cy - h * 0.5f), w, h};
+    m_view = view;
     render::UiQuad frame; // preview area indicator
     frame.rect[0] = view.x;
     frame.rect[1] = view.y;

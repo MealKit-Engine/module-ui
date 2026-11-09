@@ -79,8 +79,12 @@ private:
     void loadSource();          // reads the screen's file into m_source (edit history cleared)
     void syncSource();          // after edits: new text → preview draft, node map; commits history when no widget is active
     void setText(const std::string& text); // undo/redo: replace the source with this text
-    void drawEditToolbar();     // save, undo, add nodes, selection actions (toolbar row)
-    void drawPreviewSettings(); // resolution, UI scale, language, focus (toolbar row)
+    void drawEditToolbar();     // toolbar row: screen name, save/undo/redo, add menu, selection actions (icon buttons)
+    void drawAddMenu();         // items of the + menu (toolbar and node context menu)
+    void drawNodeMenu(const ui::SourcePath& path); // right-click on a tree row or the canvas
+    void drawBreadcrumb();      // canvas top strip: path of the selection, each part selects that node
+    void drawCanvasBar();       // canvas bottom strip: resolution, language, UI scale, focus, zoom
+    void handleCanvasView();    // wheel zooms around the mouse, middle/right drag pans
     void drawLeftColumn();      // screens, node tree
     void drawRightColumn();     // selection properties, preview values, focus, problems, Penpot
     void drawTree(ui::SourceNode& node, const ui::SourcePath& path);
@@ -129,8 +133,11 @@ private:
     std::string m_newProperty;
     int m_pendingScreen = -1; // screen to open once the save prompt is answered
     u64 m_fileTime = 0;
-    render::Viewport m_area{}, m_canvas{}; // workspace content and its canvas column (screen pixels, from the last drawWorkspace)
+    render::Viewport m_area{}, m_canvas{}; // workspace content and the canvas area between its strips (screen pixels, last drawWorkspace)
     bool m_canvasHovered = false;
+    f32 m_zoom = 0.0f;       // board pixels per logical unit; 0 = fit the canvas
+    f32 m_pan[2] = {};       // board center offset from the canvas center (screen pixels)
+    render::Viewport m_view{}; // where the board was drawn last frame (zoom around the mouse, the % shown)
 
     // Mouse on the preview
     struct Guide {

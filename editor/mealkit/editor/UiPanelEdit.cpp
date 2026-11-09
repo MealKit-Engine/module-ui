@@ -1,6 +1,7 @@
 // [UI] panel editing: source, selection, node tree, properties, history (UiPanel.h). Drawing the preview is in UiPanel.cpp
 #include "mealkit/core/Log.h"
 #include "mealkit/editor/FieldEditor.h"
+#include "mealkit/editor/ImGuiLayer.h"
 #include "mealkit/editor/Strings.h"
 #include "mealkit/editor/UiPanel.h"
 #include "mealkit/platform/Paths.h"
@@ -158,6 +159,22 @@ std::string toLf(const std::string& text) {
 bool isUnder(const ui::SourcePath& path, const ui::SourcePath& ancestor) {
     return path.size() >= ancestor.size() && std::equal(ancestor.begin(), ancestor.end(), path.begin());
 }
+
+
+// Node kind glyphs for the layers tree and the inspector header
+const char* kindGlyph(const std::string& kind) {
+    if (kind == "board") return "\xEE\x9F\xB4";  // U+E7F4 screen
+    if (kind == "text") return "\xEE\xA3\x92";   // U+E8D2 font
+    if (kind == "image") return "\xEE\xAE\x9F";  // U+EB9F photo
+    if (kind == "use") return "\xEE\x9C\x9B";    // U+E71B link (component)
+    return "\xEE\x9C\xB9";                       // U+E739 box (frame and others)
+}
+constexpr const char* kSaveGlyph = "\xEE\x9D\x8E";  // U+E74E
+constexpr const char* kUndoGlyph = "\xEE\x9E\xA7";  // U+E7A7
+constexpr const char* kRedoGlyph = "\xEE\x9E\xA6";  // U+E7A6
+constexpr const char* kWrapGlyph = "\xEE\xA2\xB3";  // U+E8B3 select all (a frame around)
+constexpr const char* kPasteGlyph = "\xEE\x9D\xBF"; // U+E77F
+constexpr const char* kHelpGlyph = "\xEE\xA2\x97";  // U+E897
 
 } // namespace
 
@@ -361,74 +378,127 @@ bool UiPanel::selectNode(const std::string& name) {
     return false;
 }
 
-// Toolbar row of the workspace: history and save, then adding nodes, then actions on the selection
+// Toolbar row of the workspace: the screen, history and save, the add menu, then actions on the selection (icon buttons with tooltips)
 void UiPanel::drawEditToolbar() {
-    if (!m_editable) {
+    if (!m_screen) {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("%s", m_source.exported ? tr("Exported from Penpot: edit it in Penpot and export again.")
-                                                    : tr("The file could not be read for editing (see the log)."));
+        ImGui::TextDisabled("%s", tr("No screen open"));
         return;
     }
-    ImGui::BeginDisabled(!dirty());
-    if (ImGui::Button(tr("Save"))) save();
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(m_undo.empty());
-    if (ImGui::Button(tr("Undo"))) undo();
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(m_redo.empty());
-    if (ImGui::Button(tr("Redo"))) redo();
-    ImGui::EndDisabled();
-    toolbarGap(ImGui::GetFontSize() * 20.0f);
-    if (ImGui::Button(tr("+ Frame"))) addNew("frame");
-    ImGui::SameLine();
-    if (ImGui::Button(tr("+ Text"))) addNew("text");
-    ImGui::SameLine();
-    if (ImGui::Button(tr("+ Image"))) addNew("image");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
-    if (beginCombo("##addComponent", tr("+ Component"))) {
-        for (const std::string& f : m_files)
-            if (ImGui::Selectable(f.c_str()) && "ui/" + f != m_path) addNew("use", "ui/" + f);
-        ImGui::EndCombo();
+    // Screen name, with a dot while unsaved
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(m_path.c_str());
+    if (dirty()) {
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", "\xE2\x97\x8F"); // U+25CF
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Unsaved (Ctrl+S saves)"));
     }
-    toolbarGap(ImGui::GetFontSize() * 18.0f);
-    ImGui::BeginDisabled(!m_hasSelection || m_selection.empty());
-    if (ImGui::Button(tr("Duplicate"))) duplicateSelected();
-    ImGui::SameLine();
-    if (ImGui::Button(tr("Copy"))) copySelected();
-    ImGui::SameLine();
-    if (ImGui::Button(tr("Wrap in frame"))) wrapSelected();
+    if (!m_editable) {
+        ImGui::SameLine(0.0f, ImGui::GetFontSize());
+        ImGui::TextDisabled("%s", tr("read-only"));
+        return;
+    }
+    toolbarGap(ImGui::GetFrameHeight() * 3.5f);
+    ImGui::BeginDisabled(!dirty());
+    if (iconButton(kSaveGlyph, tr("Save (Ctrl+S)"))) save();
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button(tr("Paste"))) paste();
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
+    ImGui::SameLine(0.0f, 2.0f);
+    ImGui::BeginDisabled(m_undo.empty());
+    if (iconButton(kUndoGlyph, tr("Undo (Ctrl+Z)"))) undo();
+    ImGui::EndDisabled();
+    ImGui::SameLine(0.0f, 2.0f);
+    ImGui::BeginDisabled(m_redo.empty());
+    if (iconButton(kRedoGlyph, tr("Redo (Ctrl+Y)"))) redo();
+    ImGui::EndDisabled();
+
+    toolbarGap(ImGui::GetFontSize() * 5.0f);
+    if (ImGui::Button((std::string(icon::kAdd) + "  " + tr("Add")).c_str())) ImGui::OpenPopup("##addMenu");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tr("Add a node inside the selected frame, or after the selected node"));
+    if (ImGui::BeginPopup("##addMenu")) {
+        drawAddMenu();
+        ImGui::EndPopup();
+    }
+
+    toolbarGap(ImGui::GetFrameHeight() * 5.0f);
+    const bool node = m_hasSelection && !m_selection.empty(); // the board itself can't be duplicated, wrapped or deleted
+    ImGui::BeginDisabled(!node);
+    if (iconButton(icon::kCopy, tr("Duplicate (Ctrl+D)"))) duplicateSelected();
+    ImGui::SameLine(0.0f, 2.0f);
+    if (iconButton(kWrapGlyph, tr("Wrap in frame"))) wrapSelected();
+    ImGui::SameLine(0.0f, 2.0f);
+    if (iconButton(icon::kTrash, tr("Delete (Del)"))) deleteSelected();
+    ImGui::EndDisabled();
+    ImGui::SameLine(0.0f, 2.0f);
+    if (iconButton(kPasteGlyph, tr("Paste (Ctrl+V)"))) paste();
+
+    ImGui::SameLine(0.0f, ImGui::GetFontSize());
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", kHelpGlyph);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
         ImGui::TextUnformatted(tr("Click the preview to select (Ctrl+click: the box beneath), drag to move or reorder, handles resize (Ctrl: no snapping). Ctrl+S saves."));
+        ImGui::TextUnformatted(tr("Wheel zooms around the mouse, middle or right drag moves the view. Right-click a layer or the selection for more."));
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
-    if (dirty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", tr("Unsaved"));
+}
+
+void UiPanel::drawAddMenu() {
+    if (ImGui::MenuItem((std::string(kindGlyph("frame")) + "  " + tr("Frame")).c_str())) addNew("frame");
+    if (ImGui::MenuItem((std::string(kindGlyph("text")) + "  " + tr("Text")).c_str())) addNew("text");
+    if (ImGui::MenuItem((std::string(kindGlyph("image")) + "  " + tr("Image")).c_str())) addNew("image");
+    if (ImGui::BeginMenu((std::string(kindGlyph("use")) + "  " + tr("Component")).c_str())) {
+        bool any = false;
+        for (const std::string& f : m_files)
+            if ("ui/" + f != m_path) {
+                any = true;
+                if (ImGui::MenuItem(f.c_str())) addNew("use", "ui/" + f);
+            }
+        if (!any) ImGui::TextDisabled("%s", tr("No other screens"));
+        ImGui::EndMenu();
     }
 }
 
+void UiPanel::drawNodeMenu(const ui::SourcePath& path) {
+    m_selection = path;
+    m_hasSelection = true;
+    const bool node = !path.empty();
+    if (ImGui::BeginMenu(tr("Add"))) {
+        drawAddMenu();
+        ImGui::EndMenu();
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(tr("Duplicate"), "Ctrl+D", false, node)) duplicateSelected();
+    if (ImGui::MenuItem(tr("Copy"), "Ctrl+C", false, node)) copySelected();
+    if (ImGui::MenuItem(tr("Paste"), "Ctrl+V")) paste();
+    if (ImGui::MenuItem(tr("Wrap in frame"), nullptr, false, node)) wrapSelected();
+    ImGui::Separator();
+    if (ImGui::MenuItem(tr("Delete"), "Del", false, node)) deleteSelected();
+}
+
+// One layer row: kind glyph, name (the kind when unnamed), the kind dimmed at the end; right-click for the node menu
 void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth |
+                               ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_FramePadding;
     if (node.children.empty() || node.kind == "use") flags |= ImGuiTreeNodeFlags_Leaf;
     if (m_hasSelection && m_selection == path) flags |= ImGuiTreeNodeFlags_Selected;
     if (m_hasSelection && isUnder(m_selection, path) && m_selection != path) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     ImGui::PushID(static_cast<int>(path.empty() ? -1 : static_cast<int>(path.back())));
-    const bool open = ImGui::TreeNodeEx("##node", flags, "%s  %s", node.kind.c_str(), node.name.c_str());
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 2.0f));
+    const std::string label = std::string(kindGlyph(node.kind)) + "  " + (node.name.empty() ? node.kind : node.name);
+    const bool open = ImGui::TreeNodeEx("##node", flags, "%s", label.c_str());
+    ImGui::PopStyleVar();
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         m_selection = path;
         m_hasSelection = true;
     }
+    if (m_editable && ImGui::BeginPopupContextItem("##nodeMenu")) {
+        drawNodeMenu(path);
+        ImGui::EndPopup();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) // the glyph says the kind; the tooltip spells it (and a component's file)
+        ImGui::SetTooltip("%s", node.kind == "use" ? (node.kind + " " + node.args).c_str() : node.kind.c_str());
     if (open) {
         if (node.kind != "use")
             for (u32 c = 0; c < node.children.size(); ++c) {
@@ -442,8 +512,10 @@ void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {
 }
 
 void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
-    ImGui::SeparatorText(tr("Properties"));
-    ImGui::TextDisabled("%s", node.kind.c_str());
+    // Header: kind glyph and kind, then the name filling the row
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(kindGlyph(node.kind));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", node.kind.c_str());
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1.0f);
     inputString("##name", node.name);
@@ -454,20 +526,31 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
 
     // Common properties with their own widgets (the lines below show every property as text)
     std::string value;
-    if (placedByLayout) ImGui::TextDisabled("%s", tr("Placed by the parent's layout: drag it in the preview to change its order."));
-    else if (node.kind != "board") {
+    ImGui::SeparatorText(tr("Layout"));
+    if (placedByLayout) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", tr("Placed by the parent's layout: drag it in the preview to change its order."));
+        ImGui::PopTextWrapPos();
+    } else if (node.kind != "board") {
         std::vector<f32> pos = ui::getProperty(node, "pos", value) ? numbers(value) : std::vector<f32>{0.0f, 0.0f};
-        if (pos.size() == 2 && ImGui::DragFloat2(tr("Position"), pos.data(), 1.0f, 0.0f, 0.0f, "%.0f"))
+        if (pos.size() == 2 && ImGui::DragFloat2(propertyRow(tr("Position")).c_str(), pos.data(), 1.0f, 0.0f, 0.0f, "%.0f"))
             ui::setProperty(node, "pos", number(pos[0]) + " " + number(pos[1]));
     }
     if (ui::getProperty(node, "size", value)) {
         const std::vector<f32> size = numbers(value);
         if (size.size() == 2) {
             f32 v[2] = {size[0], size[1]};
-            if (ImGui::DragFloat2(tr("Size"), v, 1.0f, 0.0f, 100000.0f, "%.0f")) ui::setProperty(node, "size", number(v[0]) + " " + number(v[1]));
+            if (ImGui::DragFloat2(propertyRow(tr("Size")).c_str(), v, 1.0f, 0.0f, 100000.0f, "%.0f")) ui::setProperty(node, "size", number(v[0]) + " " + number(v[1]));
         }
     }
+    bool styleHeader = false;
     for (const char* key : {"fill", "color"}) {
+        std::string probe;
+        f32 parsed[4];
+        if (!styleHeader && ui::getProperty(node, key, probe) && parseHex(probe, parsed)) { // $theme tokens have no picker here
+            ImGui::SeparatorText(tr("Style"));
+            styleHeader = true;
+        }
         f32 rgba[4];
         if (ui::getProperty(node, key, value) && parseHex(value, rgba)) {
             const std::string label = std::string(key == std::string("fill") ? tr("Fill") : tr("Text color")) + "##" + key;
@@ -475,12 +558,17 @@ void UiPanel::drawProperties(ui::SourceNode& node, bool placedByLayout) {
         }
     }
 
+    ImGui::SeparatorText(tr("State"));
     const char* const states[] = {tr("Normal"), tr("Hover"), tr("Pressed"), tr("Focus"), tr("Disabled"), tr("Checked")};
-    ImGui::Combo(tr("Show state"), &m_previewState, states, 6);
+    if (beginCombo(propertyRow(tr("Show state"), tr("Draw the selected node as if hovered, pressed ...")).c_str(), states[std::clamp(m_previewState, 0, 5)])) {
+        for (int i = 0; i < 6; ++i)
+            if (ImGui::Selectable(states[i], m_previewState == i)) m_previewState = i;
+        ImGui::EndCombo();
+    }
     drawBindings(node);
 
     // Every line of the node: edit as text, remove with x. Comments are shown dimmed
-    ImGui::SeparatorText(tr("Lines"));
+    ImGui::SeparatorText(tr("All lines"));
     for (size_t i = 0; i < node.items.size(); ++i) {
         ui::SourceItem& item = node.items[i];
         if (item.child >= 0 || item.line.empty()) continue;
@@ -574,7 +662,9 @@ void UiPanel::drawBindings(ui::SourceNode& node) {
     ImGui::SeparatorText(tr("Bindings"));
     const reflect::TypeInfo* scope = bindingScope(m_selection);
     if (!scope) {
+        ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled("%s", tr("Pick a view model under Preview values to choose fields here."));
+        ImGui::PopTextWrapPos();
         return;
     }
     std::string value;
