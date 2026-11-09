@@ -361,19 +361,14 @@ bool UiPanel::selectNode(const std::string& name) {
     return false;
 }
 
-void UiPanel::drawEditor() {
-    ImGui::SeparatorText(tr("Edit screen"));
+// Toolbar row of the workspace: history and save, then adding nodes, then actions on the selection
+void UiPanel::drawEditToolbar() {
     if (!m_editable) {
-        ImGui::BeginDisabled();
-        bool off = false;
-        ImGui::Checkbox(tr("Edit"), &off);
-        ImGui::EndDisabled();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", m_source.exported ? tr("Exported from Penpot: edit it in Penpot and export again.")
                                                     : tr("The file could not be read for editing (see the log)."));
         return;
     }
-    ImGui::Checkbox(tr("Edit"), &m_editing);
-    ImGui::SameLine();
     ImGui::BeginDisabled(!dirty());
     if (ImGui::Button(tr("Save"))) save();
     ImGui::EndDisabled();
@@ -385,11 +380,29 @@ void UiPanel::drawEditor() {
     ImGui::BeginDisabled(m_redo.empty());
     if (ImGui::Button(tr("Redo"))) redo();
     ImGui::EndDisabled();
-    if (dirty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", tr("Unsaved"));
+    toolbarGap(ImGui::GetFontSize() * 20.0f);
+    if (ImGui::Button(tr("+ Frame"))) addNew("frame");
+    ImGui::SameLine();
+    if (ImGui::Button(tr("+ Text"))) addNew("text");
+    ImGui::SameLine();
+    if (ImGui::Button(tr("+ Image"))) addNew("image");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+    if (beginCombo("##addComponent", tr("+ Component"))) {
+        for (const std::string& f : m_files)
+            if (ImGui::Selectable(f.c_str()) && "ui/" + f != m_path) addNew("use", "ui/" + f);
+        ImGui::EndCombo();
     }
-    if (!m_editing) return;
+    toolbarGap(ImGui::GetFontSize() * 18.0f);
+    ImGui::BeginDisabled(!m_hasSelection || m_selection.empty());
+    if (ImGui::Button(tr("Duplicate"))) duplicateSelected();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Copy"))) copySelected();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Wrap in frame"))) wrapSelected();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Paste"))) paste();
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
@@ -399,44 +412,10 @@ void UiPanel::drawEditor() {
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
-
-    // New nodes; the rest acts on the selection
-    if (ImGui::SmallButton(tr("+ Frame"))) addNew("frame");
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("+ Text"))) addNew("text");
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("+ Image"))) addNew("image");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(130.0f);
-    if (beginCombo("##addComponent", tr("+ Component"))) {
-        for (const std::string& f : m_files)
-            if (ImGui::Selectable(f.c_str()) && "ui/" + f != m_path) addNew("use", "ui/" + f);
-        ImGui::EndCombo();
+    if (dirty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", tr("Unsaved"));
     }
-    ImGui::BeginDisabled(!m_hasSelection || m_selection.empty());
-    if (ImGui::SmallButton(tr("Duplicate"))) duplicateSelected();
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("Copy"))) copySelected();
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("Wrap in frame"))) wrapSelected();
-    ImGui::SameLine();
-    ImGui::EndDisabled();
-    if (ImGui::SmallButton(tr("Paste"))) paste();
-
-    if (ImGui::BeginChild("##uiTree", ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY)) {
-        if (ui::SourceNode* board = ui::findNode(m_source, {})) drawTree(*board, {});
-    }
-    ImGui::EndChild();
-
-    if (m_hasSelection)
-        if (ui::SourceNode* n = ui::findNode(m_source, m_selection)) {
-            // Inside a flex/grid layout the parent places the node (pos is ignored unless the node is absolute)
-            std::string layout, unused;
-            const ui::SourceNode* parent = m_selection.empty() ? nullptr : ui::findNode(m_source, ui::SourcePath(m_selection.begin(), m_selection.end() - 1));
-            const bool placed = parent && ui::getProperty(*parent, "layout", layout) && !ui::getProperty(*n, "absolute", unused);
-            drawProperties(*n, placed);
-        }
-    syncSource();
 }
 
 void UiPanel::drawTree(ui::SourceNode& node, const ui::SourcePath& path) {

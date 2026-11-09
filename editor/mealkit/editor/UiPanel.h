@@ -9,7 +9,9 @@
 #include <string>
 #include <vector>
 
-// Editor [UI] panel: preview of game screens (assets/ui/*.ui). Draws the chosen screen over the scene view in edit mode.
+// Editor [UI] workspace (a tab beside the Viewport, DECISIONS 2026-11-09): game screens (assets/ui/*.ui) edited on a canvas of their own.
+// Layout: toolbar row (edit buttons, resolution, scale, language), left column screens + node tree, middle canvas, right column properties,
+// preview values, focus and problems.
 // Change resolution (aspect), UI scale, language (to check text overflow), and put fake values into the game's view models (MEALKIT_VIEWMODEL).
 // Shows file errors, binding errors (missing fields), and node count (budget 500). Editing and saving a .ui rereads it immediately.
 // [Edit screen]: WYSIWYG editing (ROADMAP "Game UI editor in the editor"). Edits the file's source (mkui/Source.h), the preview shows the unsaved text
@@ -17,18 +19,23 @@
 // the editor routes Ctrl+Z/Y/S and Delete here while editing. Penpot exports open read-only.
 namespace mealkit::editor {
 
+void toolbarGap(f32 width); // workspace toolbar: next group on this row, or on a new one when less than width is left
+
 class UiPanel {
 public:
     // When a project opens: default language (language in mealkit.project)
     void setProject(const std::string& defaultLanguage);
     // View model list of the game DLL (GameModule::viewModels, nullptr before unloading the DLL)
     void setViewModels(const std::vector<const reflect::TypeInfo*>* types);
-    void drawContent();
+    // The whole workspace inside the current ImGui window (the editor's [UI] window, drawn without a background: the screen is
+    // rendered on the back buffer under it, see render)
+    void drawWorkspace();
+    bool canvasHovered() const { return m_canvasHovered; } // the mouse is on the canvas (not on a column, the toolbar or a popup)
     void select(const std::string& uiFile); // automated tests: "hud.ui"
     void refresh();                         // reread the assets/ui file list
     void setPenpotUrl(const std::string& url) { m_penpotUrl = url; } // Penpot plugin install address (import server)
-    // In edit mode, draws over the scene view if the panel is open (after 3D, before editor UI)
-    void render(render::Renderer& renderer, const render::Viewport& sceneView, f64 dt);
+    // Draws the backdrop over the workspace and the screen on the canvas (after 3D, before editor UI), only while the workspace is visible
+    void render(render::Renderer& renderer, f64 dt);
 
     // Editing (the editor asks these while the panel is open in edit mode)
     bool editing() const { return m_editing && m_editable; }
@@ -45,7 +52,7 @@ public:
     // kind: frame / text / image / use (args = component path). Inside the selected frame, else after the selected node
     bool addNew(const std::string& kind, const std::string& args = {});
     bool wrapSelected();
-    // Mouse over the scene view every frame (screen pixels): press selects the topmost box (ctrl: the one beneath), dragging the
+    // Mouse over the canvas every frame (screen pixels): press selects the topmost box (ctrl: the one beneath), dragging the
     // selection moves it (free nodes, snapping unless ctrl) or reorders it (nodes a layout places), handles resize. overUi = an editor
     // window has the mouse. true while the panel uses the mouse
     bool pointer(f32 x, f32 y, bool pressed, bool down, bool ctrl, bool overUi);
@@ -72,7 +79,10 @@ private:
     void loadSource();          // reads the screen's file into m_source (edit history cleared)
     void syncSource();          // after edits: new text → preview draft, node map; commits history when no widget is active
     void setText(const std::string& text); // undo/redo: replace the source with this text
-    void drawEditor();          // node tree + properties
+    void drawEditToolbar();     // save, undo, add nodes, selection actions (toolbar row)
+    void drawPreviewSettings(); // resolution, UI scale, language, focus (toolbar row)
+    void drawLeftColumn();      // screens, node tree
+    void drawRightColumn();     // selection properties, preview values, focus, problems, Penpot
     void drawTree(ui::SourceNode& node, const ui::SourcePath& path);
     void drawProperties(ui::SourceNode& node, bool placedByLayout);
     void drawBindings(ui::SourceNode& node);
@@ -107,7 +117,7 @@ private:
     std::string m_penpotUrl;
 
     // Editing
-    bool m_editing = false, m_editable = false;
+    bool m_editing = true, m_editable = false; // the workspace always edits; m_editable false for Penpot exports and unreadable files
     std::string m_path;           // asset path of the open screen ("ui/hud.ui")
     bool m_crlf = false;          // file used CRLF line ends (kept on save)
     ui::Source m_source;
@@ -119,6 +129,8 @@ private:
     std::string m_newProperty;
     int m_pendingScreen = -1; // screen to open once the save prompt is answered
     u64 m_fileTime = 0;
+    render::Viewport m_area{}, m_canvas{}; // workspace content and its canvas column (screen pixels, from the last drawWorkspace)
+    bool m_canvasHovered = false;
 
     // Mouse on the preview
     struct Guide {
