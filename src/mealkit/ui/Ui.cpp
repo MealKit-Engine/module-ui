@@ -2,6 +2,7 @@
 
 #include "mealkit/core/Log.h"
 #include "mealkit/input/Actions.h"
+#include "mealkit/live/Server.h"
 #include "mealkit/loc/Strings.h"
 #include "mealkit/platform/Input.h"
 #include "mealkit/platform/Paths.h"
@@ -282,5 +283,80 @@ bool System::press(ScreenId screen, const std::string& nodeName) { return m->ui.
 bool System::pressAny(const std::string& nodeName) { return m->ui.pressAny(nodeName); }
 bool System::focusText(ScreenId screen, const std::string& nodeName) { return m->ui.focusText(screen, nodeName); }
 bool System::editingText() const { return m->ui.editingText(); }
+
+// ---------------------------------------------------------------- Live connection ui/
+
+namespace {
+
+std::string queryValue(const std::string& query, const std::string& key) {
+    size_t pos = 0;
+    while (pos <= query.size()) {
+        size_t end = query.find('&', pos);
+        if (end == std::string::npos) end = query.size();
+        const std::string part = query.substr(pos, end - pos);
+        pos = end + 1;
+        const size_t eq = part.find('=');
+        if (eq == std::string::npos || part.substr(0, eq) != key) continue;
+        std::string out;
+        for (size_t i = eq + 1; i < part.size(); ++i) {
+            if (part[i] == '+') out += ' ';
+            else if (part[i] == '%' && i + 2 < part.size()) {
+                out += static_cast<char>(std::strtol(part.substr(i + 1, 2).c_str(), nullptr, 16));
+                i += 2;
+            } else out += part[i];
+        }
+        return out;
+    }
+    return {};
+}
+
+} // namespace
+
+void addLiveService(live::Server& server, std::function<System*()> system) {
+    live::Service s;
+    s.name = "ui";
+    s.handle = [system](const live::Request& req) {
+        live::Response r;
+        System* ui = system ? system() : nullptr;
+        if (!ui) {
+            r.status = 503;
+            r.body = "{\"ok\":false,\"error\":\"no game UI (not playing)\"}";
+            return r;
+        }
+        if (req.method == "GET" && req.path == "screens") {
+            std::string out = "{\"ok\":true,\"screens\":[";
+            bool first = true;
+            for (ScreenId id : ui->screens()) {
+                const reflect::View vm = ui->viewModel(id);
+                out += std::string(first ? "" : ",") + "{\"path\":" + live::jsonString(ui->info(id).path) +
+                       ",\"model\":" + live::jsonString(vm.type ? vm.type->name : "") + "}";
+                first = false;
+            }
+            r.body = out + "]}";
+            return r;
+        }
+        if (req.method == "GET" && req.path == "values") {
+            const std::string path = queryValue(req.query, "screen");
+            for (ScreenId id : ui->screens()) {
+                const reflect::View vm = ui->viewModel(id);
+                if (ui->info(id).path != path || !vm.type) continue;
+                reflect::TextFields fields;
+                reflect::toText(*vm.type, vm.data, fields);
+                std::string out = "{\"ok\":true,\"model\":" + live::jsonString(vm.type->name) + ",\"values\":[";
+                for (size_t i = 0; i < fields.size(); ++i)
+                    out += std::string(i ? "," : "") + "[" + live::jsonString(fields[i].first) + "," + live::jsonString(fields[i].second) + "]";
+                r.body = out + "]}";
+                return r;
+            }
+            r.status = 404;
+            r.body = "{\"ok\":false,\"error\":" + live::jsonString("no open screen " + path + " with a view model") + "}";
+            return r;
+        }
+        r.status = 404;
+        r.body = "{\"ok\":false,\"error\":\"unknown ui/ request\"}";
+        return r;
+    };
+    server.addService(std::move(s));
+}
 
 } // namespace mealkit::ui

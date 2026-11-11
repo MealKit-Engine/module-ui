@@ -6,6 +6,7 @@
 
 #include "mkui/Ui.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,9 @@ namespace render {
 class Renderer;
 struct Viewport;
 } // namespace render
+namespace live {
+class Server;
+} // namespace live
 namespace loc {
 class Strings;
 }
@@ -126,5 +130,10 @@ private:
     struct Impl;
     Impl* m;
 };
+
+// Live connection ui/ (MkUI Designer takes a running game's real view-model values): GET ui/screens lists open screens with the
+// bound view model type, GET ui/values?screen=ui/menu.ui gives that screen's view model as "path value" pairs (reflect::toText).
+// system() may return nullptr (editor not playing: 503)
+void addLiveService(live::Server& server, std::function<System*()> system);
 
 } // namespace mealkit::ui
