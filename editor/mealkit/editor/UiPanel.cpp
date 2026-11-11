@@ -41,7 +41,7 @@ void UiPanel::draw(ui::System* gameUi) {
             ImGui::PopTextWrapPos();
         }
         ImGui::Spacing();
-        if (m_files.empty()) ImGui::TextDisabled("%s", tr("No screens in assets/ui yet (MkUI: File > New screen)"));
+        if (m_files.empty()) ImGui::TextDisabled("%s", tr("No screens in assets/ui yet (MkUI: Files > New screen)"));
         for (const std::string& f : m_files) {
             ImGui::PushID(f.c_str());
             if (ImGui::SmallButton(tr("Open in MkUI"))) open(f);
@@ -49,14 +49,8 @@ void UiPanel::draw(ui::System* gameUi) {
             ImGui::TextUnformatted(f.c_str() + 3); // without "ui/"
             ImGui::PopID();
         }
-        if (!m_penpotUrl.empty()) {
-            ImGui::Spacing();
-            ImGui::TextDisabled("%s", tr("Penpot plugin (import from Penpot):"));
-            ImGui::SameLine();
-            ImGui::TextUnformatted(m_penpotUrl.c_str());
-            if (ImGui::IsItemClicked()) ImGui::SetClipboardText(m_penpotUrl.c_str());
-            ImGui::SetItemTooltip("%s", tr("Click to copy. In Penpot: Plugins > Install, paste this address"));
-        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", tr("Penpot designs: the MkUI Designer serves the MealKit Penpot plugin (Files > Penpot plugin)."));
         ImGui::EndGroup();
         return;
     }
