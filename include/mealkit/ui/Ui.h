@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mealkit/render/Fwd.h"
 #include "mealkit/core/Math.h"
 #include "mealkit/core/Reflect.h"
 #include "mealkit/core/Types.h"
@@ -12,10 +13,6 @@
 
 namespace mealkit {
 class Input;
-namespace render {
-class Renderer;
-struct Viewport;
-} // namespace render
 namespace live {
 class Server;
 } // namespace live
